@@ -1,3 +1,4 @@
+
 "use client";
 
 import Link from "next/link";
@@ -8,10 +9,9 @@ import {
   query,
   where,
   doc,
-  getDoc,
   getDocFromServer,
 } from "firebase/firestore";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 
 type Client = {
@@ -52,15 +52,27 @@ type Wedding = {
 };
 
 function formatMoney(amount: number) {
-  return `₹${amount.toLocaleString("en-IN")}`;
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(amount || 0);
 }
 
-function formatDate(dateString?: string) {
-  if (!dateString) return "-";
+function formatDate(value: any) {
+  if (!value) return "Date not set";
 
-  const date = new Date(dateString);
+  let date: Date;
 
-  if (Number.isNaN(date.getTime())) return dateString;
+  if (typeof value?.toDate === "function") {
+    date = value.toDate();
+  } else if (value instanceof Date) {
+    date = value;
+  } else {
+    date = new Date(value);
+  }
+
+  if (Number.isNaN(date.getTime())) return "Date not set";
 
   return date.toLocaleDateString("en-IN", {
     day: "2-digit",
@@ -69,967 +81,554 @@ function formatDate(dateString?: string) {
   });
 }
 
-function getDateValue(value: any) {
+function getDateValue(value: any): number {
   if (!value) return 0;
 
   if (typeof value?.toDate === "function") {
     return value.toDate().getTime();
   }
 
-  if (value instanceof Date) {
-    return value.getTime();
-  }
-
-  const date = new Date(value).getTime();
-
-  return Number.isNaN(date) ? 0 : date;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 
-export default function DashboardPage() {
+function getPaymentDate(payment: Payment) {
+  return getDateValue(payment.paymentDate || payment.createdAt);
+}
+
+export default function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
-
-  const [studioName, setStudioName] = useState(
-    "Studio Name Not Found"
-  );
-
+  const [studioName, setStudioName] = useState("Loading studio...");
   const [clients, setClients] = useState<Client[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [weddings, setWeddings] = useState<Wedding[]>([]);
-
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      async (user) => {
-        if (!user) {
-          setStudioName("Please Login");
-          setClients([]);
-          setPayments([]);
-          setTasks([]);
-          setWeddings([]);
-          setLoading(false);
-          return;
+    let active = true;
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!active) return;
+
+      if (!user) {
+        setStudioName("Please Login");
+        setClients([]);
+        setPayments([]);
+        setTasks([]);
+        setWeddings([]);
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setErrorMessage("");
+
+      try {
+        const userId = user.uid;
+
+        const studioSnap = await getDocFromServer(
+          doc(db, "studios", userId)
+        );
+
+        if (!active) return;
+
+        if (studioSnap.exists()) {
+          const studioData = studioSnap.data();
+          setStudioName(
+            studioData.studioName ||
+              studioData.name ||
+              "My Studio"
+          );
+        } else {
+          setStudioName("Studio Profile Not Found");
         }
 
-        try {
-          setLoading(true);
-          setErrorMessage("");
-
-          const userId = user.uid;
-
-          console.log("=================================");
-          console.log("DASHBOARD USER UID:", userId);
-          console.log("DASHBOARD USER EMAIL:", user.email);
-          console.log("=================================");
-
-          // =========================
-          // LOAD STUDIO DATA
-          // =========================
-
-          const studioRef = doc(
-            db,
-            "studios",
-            userId
-          );
-
-          const studioSnapshot =
-            await getDocFromServer(studioRef);
-
-          console.log(
-            "Studio document exists:",
-            studioSnapshot.exists()
-          );
-
-          if (studioSnapshot.exists()) {
-            const studioData =
-              studioSnapshot.data();
-
-            console.log(
-              "Studio document data:",
-              studioData
-            );
-
-            const name =
-              studioData?.studioName;
-
-            console.log(
-              "Studio Name from Firebase:",
-              name
-            );
-
-            if (
-              typeof name === "string" &&
-              name.trim() !== ""
-            ) {
-              setStudioName(name.trim());
-            } else {
-              setStudioName(
-                "Studio Name Not Found"
-              );
-            }
-          } else {
-            console.log(
-              "Studio document NOT FOUND for UID:",
-              userId
-            );
-
-            setStudioName(
-              "Studio Profile Not Found"
-            );
-          }
-
-          // =========================
-          // LOAD CLIENTS
-          // =========================
-
-          const clientsQuery = query(
-            collection(db, "clients"),
-            where(
-              "studioId",
-              "==",
-              userId
-            )
-          );
-
-          // =========================
-          // LOAD PAYMENTS
-          // =========================
-
-          const paymentsQuery = query(
-            collection(db, "payments"),
-            where(
-              "studioId",
-              "==",
-              userId
-            )
-          );
-
-          // =========================
-          // LOAD TASKS
-          // =========================
-
-          const tasksQuery = query(
-            collection(db, "tasks"),
-            where(
-              "studioId",
-              "==",
-              userId
-            )
-          );
-
-          // =========================
-          // LOAD EVENTS
-          // =========================
-
-          const weddingsQuery = query(
-            collection(db, "weddings"),
-            where(
-              "studioId",
-              "==",
-              userId
-            )
-          );
-
-          const [
-            clientsSnapshot,
-            paymentsSnapshot,
-            tasksSnapshot,
-            weddingsSnapshot,
-          ] = await Promise.all([
-            getDocs(clientsQuery),
-            getDocs(paymentsQuery),
-            getDocs(tasksQuery),
-            getDocs(weddingsQuery),
+        const [clientSnap, paymentSnap, taskSnap, weddingSnap] =
+          await Promise.all([
+            getDocs(
+              query(
+                collection(db, "clients"),
+                where("studioId", "==", userId)
+              )
+            ),
+            getDocs(
+              query(
+                collection(db, "payments"),
+                where("studioId", "==", userId)
+              )
+            ),
+            getDocs(
+              query(
+                collection(db, "tasks"),
+                where("studioId", "==", userId)
+              )
+            ),
+            getDocs(
+              query(
+                collection(db, "weddings"),
+                where("studioId", "==", userId)
+              )
+            ),
           ]);
 
-          // =========================
-          // CLIENT DATA
-          // =========================
+        if (!active) return;
 
-          const clientsData: Client[] =
-            clientsSnapshot.docs.map(
-              (item) => ({
-                id: item.id,
-                ...item.data(),
-              })
-            );
+        setClients(
+          clientSnap.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+          })) as Client[]
+        );
 
-          // =========================
-          // PAYMENT DATA
-          // =========================
+        setPayments(
+          paymentSnap.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+          })) as Payment[]
+        );
 
-          const paymentsData: Payment[] =
-            paymentsSnapshot.docs.map(
-              (item) => ({
-                id: item.id,
-                ...item.data(),
-              })
-            );
+        setTasks(
+          taskSnap.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+          })) as Task[]
+        );
 
-          // =========================
-          // TASK DATA
-          // =========================
+        setWeddings(
+          weddingSnap.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+          })) as Wedding[]
+        );
+      } catch (error: any) {
+        console.error("Dashboard loading error:", error);
 
-          const tasksData: Task[] =
-            tasksSnapshot.docs.map(
-              (item) => ({
-                id: item.id,
-                ...item.data(),
-              })
-            );
-
-          // =========================
-          // EVENT DATA
-          // =========================
-
-          const weddingsData: Wedding[] =
-            weddingsSnapshot.docs.map(
-              (item) => ({
-                id: item.id,
-                ...item.data(),
-              })
-            );
-
-          console.log(
-            "Dashboard Data:",
-            {
-              clients:
-                clientsData.length,
-              payments:
-                paymentsData.length,
-              tasks:
-                tasksData.length,
-              weddings:
-                weddingsData.length,
-            }
-          );
-
-          setClients(clientsData);
-          setPayments(paymentsData);
-          setTasks(tasksData);
-          setWeddings(weddingsData);
-        } catch (error: any) {
-          console.error(
-            "Dashboard Firebase Error:",
-            error
-          );
-
+        if (active) {
           setErrorMessage(
             error?.message ||
-              "Dashboard data load કરવામાં problem આવી."
+              "Dashboard load થયું નથી. Internet અને Firebase permissions તપાસો."
           );
-        } finally {
-          setLoading(false);
         }
+      } finally {
+        if (active) setLoading(false);
       }
-    );
+    });
 
     return () => {
+      active = false;
       unsubscribe();
     };
   }, []);
 
-  // =========================
-  // STATS
-  // =========================
+  async function handleLogout() {
+    const confirmed = window.confirm("શું તમે Logout કરવા માંગો છો?");
+    if (!confirmed) return;
 
-  const totalClients =
-    clients.length;
+    try {
+      setLoggingOut(true);
+      await signOut(auth);
+      window.location.href = "/login";
+    } catch (error) {
+      console.error("Logout error:", error);
+      alert("Logout થયું નથી. ફરી પ્રયત્ન કરો.");
+      setLoggingOut(false);
+    }
+  }
 
-  const totalRevenue =
-    clients.reduce(
-      (sum, client) =>
-        sum +
-        Number(
-          client.totalAmount || 0
-        ),
-      0
+  const totalClients = clients.length;
+
+  const totalRevenue = clients.reduce(
+    (sum, client) => sum + Number(client.totalAmount || 0),
+    0
+  );
+
+  const totalPaid = payments.reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0
+  );
+
+  const pendingPayment = Math.max(0, totalRevenue - totalPaid);
+
+  const pendingTasks = tasks.filter((task) => {
+    const status = String(task.status || "").toLowerCase();
+
+    return (
+      task.completed !== true &&
+      !["completed", "complete", "done"].includes(status)
     );
+  }).length;
 
-  const totalPaid =
-    payments.reduce(
-      (sum, payment) =>
-        sum +
-        Number(
-          payment.amount || 0
-        ),
-      0
-    );
+  const recentPayments = [...payments]
+    .sort((a, b) => getPaymentDate(b) - getPaymentDate(a))
+    .slice(0, 5);
 
-  const pendingPayment =
-    Math.max(
-      0,
-      totalRevenue - totalPaid
-    );
+  const upcomingEvents = [...weddings]
+    .sort(
+      (a, b) =>
+        getDateValue(a.eventStartDate || a.weddingDate) -
+        getDateValue(b.eventStartDate || b.weddingDate)
+    )
+    .slice(0, 5);
 
-  const pendingTasks =
-    tasks.filter((task) => {
-      if (
-        task.completed === true
-      ) {
-        return false;
-      }
+  const navItems = [
+    { label: "Dashboard", href: "/", icon: "🏠" },
+    { label: "Clients", href: "/clients", icon: "👥" },
+    { label: "Events", href: "/weddings", icon: "💍" },
+    { label: "Payments", href: "/payments", icon: "💰" },
+    { label: "Tasks", href: "/tasks", icon: "✅" },
+    { label: "Calendar", href: "/calendar", icon: "📅" },
+    { label: "Expenses", href: "/expenses", icon: "🧾" },
+    { label: "Reports", href: "/reports", icon: "📊" },
+  ];
 
-      const status =
-        String(
-          task.status || ""
-        ).toLowerCase();
-
-      return (
-        status !== "completed" &&
-        status !== "complete" &&
-        status !== "done"
-      );
-    }).length;
-
-  const recentPayments =
-    [...payments]
-      .sort((a, b) => {
-        const dateA =
-          getDateValue(
-            a.paymentDate ||
-              a.createdAt
-          );
-
-        const dateB =
-          getDateValue(
-            b.paymentDate ||
-              b.createdAt
-          );
-
-        return dateB - dateA;
-      })
-      .slice(0, 5);
-
-  const upcomingEvents =
-    [...weddings]
-      .filter((wedding) => {
-        const date =
-          wedding.eventStartDate ||
-          wedding.weddingDate;
-
-        return Boolean(date);
-      })
-      .sort((a, b) => {
-        const dateA =
-          getDateValue(
-            a.eventStartDate ||
-              a.weddingDate
-          );
-
-        const dateB =
-          getDateValue(
-            b.eventStartDate ||
-              b.weddingDate
-          );
-
-        return dateA - dateB;
-      })
-      .slice(0, 5);
+  const stats = [
+    {
+      label: "Total Clients",
+      value: totalClients.toString(),
+      icon: "👥",
+      color: "bg-blue-50 text-blue-700",
+    },
+    {
+      label: "Total Revenue",
+      value: formatMoney(totalRevenue),
+      icon: "💵",
+      color: "bg-green-50 text-green-700",
+    },
+    {
+      label: "Pending Payment",
+      value: formatMoney(pendingPayment),
+      icon: "💰",
+      color: "bg-orange-50 text-orange-700",
+    },
+    {
+      label: "Pending Tasks",
+      value: pendingTasks.toString(),
+      icon: "✅",
+      color: "bg-purple-50 text-purple-700",
+    },
+  ];
 
   return (
-    <main className="min-h-screen bg-slate-100 text-slate-900">
-
-      {/* TOP BAR */}
-
-      <header className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur">
-
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-
+    <main className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900">
+      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-3 sm:px-5">
           <button
-            onClick={() =>
-              setMenuOpen(
-                (value) => !value
-              )
-            }
-            className="flex h-11 w-11 items-center justify-center rounded-xl border bg-white text-xl shadow-sm hover:bg-slate-50"
+            type="button"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Open menu"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-xl hover:bg-slate-100"
           >
             ☰
           </button>
 
-          <div className="text-center">
-
-            <h1 className="text-xl font-bold">
+          <Link href="/" className="min-w-0 text-center">
+            <span className="block truncate text-xl font-extrabold tracking-tight text-indigo-700 sm:text-2xl">
               WedFlow
-            </h1>
-
-            <p className="text-xs text-slate-500">
+            </span>
+            <span className="hidden text-[10px] text-slate-500 min-[360px]:block">
               Wedding Studio Management
-            </p>
+            </span>
+          </Link>
 
-          </div>
-
-          <div className="w-11" />
-
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50 sm:px-4 sm:text-sm"
+          >
+            {loggingOut ? "Logging out..." : "Logout"}
+          </button>
         </div>
-
       </header>
 
-      {/* SIDEBAR */}
-
       {menuOpen && (
-        <>
-          <div
-            onClick={() =>
-              setMenuOpen(false)
-            }
-            className="fixed inset-0 z-40 bg-black/30"
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            aria-label="Close menu overlay"
+            onClick={() => setMenuOpen(false)}
+            className="absolute inset-0 bg-black/50"
           />
 
-          <aside className="fixed left-0 top-0 z-50 h-full w-72 bg-white p-5 shadow-2xl">
-
-            <div className="flex items-center justify-between border-b pb-5">
-
-              <div>
-
-                <h2 className="text-xl font-bold">
+          <aside className="absolute inset-y-0 left-0 flex w-[min(20rem,85vw)] flex-col bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b p-4">
+              <div className="min-w-0">
+                <p className="text-xl font-extrabold text-indigo-700">
                   WedFlow
-                </h2>
-
-                <p className="text-xs text-slate-500">
-                  Wedding Studio Management
                 </p>
-
+                <p className="truncate text-xs text-slate-500">
+                  {studioName}
+                </p>
               </div>
 
               <button
-                onClick={() =>
-                  setMenuOpen(false)
-                }
-                className="rounded-lg px-3 py-2 text-xl hover:bg-slate-100"
+                type="button"
+                onClick={() => setMenuOpen(false)}
+                aria-label="Close menu"
+                className="flex h-10 w-10 items-center justify-center rounded-xl text-2xl hover:bg-slate-100"
               >
                 ×
               </button>
-
             </div>
 
-            <nav className="mt-5 space-y-2">
-
-              <Link
-                href="/"
-                onClick={() =>
-                  setMenuOpen(false)
-                }
-                className="flex items-center gap-3 rounded-xl bg-slate-900 px-4 py-3 font-semibold text-white"
-              >
-                🏠 Dashboard
-              </Link>
-
-              <Link
-                href="/clients"
-                onClick={() =>
-                  setMenuOpen(false)
-                }
-                className="flex items-center gap-3 rounded-xl px-4 py-3 font-semibold hover:bg-slate-100"
-              >
-                👤 Clients
-              </Link>
-
-              <Link
-                href="/weddings"
-                onClick={() =>
-                  setMenuOpen(false)
-                }
-                className="flex items-center gap-3 rounded-xl px-4 py-3 font-semibold hover:bg-slate-100"
-              >
-                📅 Events
-              </Link>
-
-              <Link
-                href="/payments"
-                onClick={() =>
-                  setMenuOpen(false)
-                }
-                className="flex items-center gap-3 rounded-xl px-4 py-3 font-semibold hover:bg-slate-100"
-              >
-                💰 Payments
-              </Link>
-
-              <Link
-                href="/tasks"
-                onClick={() =>
-                  setMenuOpen(false)
-                }
-                className="flex items-center gap-3 rounded-xl px-4 py-3 font-semibold hover:bg-slate-100"
-              >
-                ✓ Tasks
-              </Link>
-
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
-
-                  alert(
-                    "Logout functionality can be connected here."
-                  );
-                }}
-                className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left font-semibold text-red-600 hover:bg-red-50"
-              >
-                🚪 Logout
-              </button>
-
+            <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+              {navItems.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setMenuOpen(false)}
+                  className={`flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${
+                    item.href === "/"
+                      ? "bg-indigo-50 text-indigo-700"
+                      : "text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  <span className="text-lg">{item.icon}</span>
+                  <span>{item.label}</span>
+                </Link>
+              ))}
             </nav>
 
+            <div className="border-t p-3">
+              <button
+                type="button"
+                onClick={handleLogout}
+                disabled={loggingOut}
+                className="w-full rounded-xl bg-red-50 px-4 py-3 text-left text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+              >
+                {loggingOut ? "Logging out..." : "🚪 Logout"}
+              </button>
+            </div>
           </aside>
-        </>
+        </div>
       )}
 
-      <div className="mx-auto max-w-7xl px-4 py-6">
-
-        {/* WELCOME */}
-
-        <section className="mb-6">
-
-          <h2 className="text-2xl font-bold">
+      <div className="mx-auto max-w-7xl px-3 py-5 sm:px-5 sm:py-7 lg:px-8">
+        <section className="mb-6 rounded-2xl bg-gradient-to-r from-indigo-700 to-violet-600 p-5 text-white shadow-md sm:mb-8 sm:p-7">
+          <p className="mb-2 text-sm text-indigo-100">Welcome to WedFlow</p>
+          <h1 className="break-words text-2xl font-bold sm:text-3xl">
             {studioName}
-          </h2>
-
-          <p className="mt-1 text-sm text-slate-500">
-            Manage your wedding studio from one place.
+          </h1>
+          <p className="mt-2 text-sm text-indigo-100">
+            Manage your studio, clients, payments and events in one place.
           </p>
-
         </section>
 
-        {/* ERROR */}
-
         {errorMessage && (
-          <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 p-4">
-
-            <p className="font-bold text-red-700">
-              Dashboard Firebase Error
-            </p>
-
-            <p className="mt-1 text-sm text-red-600">
-              {errorMessage}
-            </p>
-
+          <div className="mb-5 break-words rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            <p className="font-semibold">Dashboard Error</p>
+            <p className="mt-1">{errorMessage}</p>
           </div>
         )}
 
-        {/* STATS */}
-
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
-          {/* TOTAL CLIENTS */}
-
-          <div className="rounded-2xl border bg-white p-5 shadow-sm">
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-sm text-slate-500">
-                  Total Clients
-                </p>
-
-                <h3 className="mt-2 text-3xl font-bold">
-                  {loading
-                    ? "..."
-                    : totalClients}
-                </h3>
-
-              </div>
-
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-2xl">
-                👤
-              </div>
-
-            </div>
-
+        {loading && (
+          <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
+            Dashboard data loading...
           </div>
+        )}
 
-          {/* TOTAL REVENUE */}
-
-          <div className="rounded-2xl border bg-white p-5 shadow-sm">
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-sm text-slate-500">
-                  Total Revenue
-                </p>
-
-                <h3 className="mt-2 text-3xl font-bold">
-                  {loading
-                    ? "..."
-                    : formatMoney(
-                        totalRevenue
-                      )}
-                </h3>
-
-              </div>
-
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-2xl">
-                ₹
-              </div>
-
-            </div>
-
-          </div>
-
-          {/* PENDING PAYMENT */}
-
-          <div className="rounded-2xl border bg-white p-5 shadow-sm">
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-sm text-slate-500">
-                  Pending Payment
-                </p>
-
-                <h3 className="mt-2 text-3xl font-bold text-red-600">
-                  {loading
-                    ? "..."
-                    : formatMoney(
-                        pendingPayment
-                      )}
-                </h3>
-
-              </div>
-
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-red-50 text-2xl">
-                💰
-              </div>
-
-            </div>
-
-          </div>
-
-          {/* PENDING TASKS */}
-
-          <div className="rounded-2xl border bg-white p-5 shadow-sm">
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-sm text-slate-500">
-                  Pending Tasks
-                </p>
-
-                <h3 className="mt-2 text-3xl font-bold">
-                  {loading
-                    ? "..."
-                    : pendingTasks}
-                </h3>
-
-              </div>
-
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-2xl">
-                ✓
-              </div>
-
-            </div>
-
-          </div>
-
-        </section>
-
-        {/* QUICK ACTIONS */}
-
-        <section className="mt-6">
-
-          <div className="mb-3">
-
-            <h2 className="text-xl font-bold">
-              Quick Actions
-            </h2>
-
-            <p className="text-sm text-slate-500">
-              Quickly access common actions
+        {!auth.currentUser && !loading ? (
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+            <p className="text-lg font-bold">Please Login</p>
+            <p className="mt-2 text-sm text-slate-600">
+              Manage your wedding studio from one place.
             </p>
-
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
             <Link
-              href="/clients"
-              className="rounded-2xl border bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
+              href="/login"
+              className="mt-5 inline-flex rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-700"
             >
-              <div className="text-3xl">
-                👤
+              Go to Login
+            </Link>
+          </section>
+        ) : (
+          <>
+            <section className="mb-8">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h2 className="text-lg font-bold sm:text-xl">
+                  Studio Overview
+                </h2>
+                <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-500 shadow-sm">
+                  Live data
+                </span>
               </div>
 
-              <h3 className="mt-3 font-bold">
-                Add Client
-              </h3>
-
-              <p className="mt-1 text-sm text-slate-500">
-                Create a new client
-              </p>
-            </Link>
-
-            <Link
-              href="/weddings"
-              className="rounded-2xl border bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
-            >
-              <div className="text-3xl">
-                📅
+              <div className="grid grid-cols-1 gap-3 min-[380px]:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+                {stats.map((stat) => (
+                  <div
+                    key={stat.label}
+                    className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md sm:p-5"
+                  >
+                    <div className="mb-4 flex items-center justify-between gap-2">
+                      <p className="text-sm text-slate-500">{stat.label}</p>
+                      <span
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-xl ${stat.color}`}
+                      >
+                        {stat.icon}
+                      </span>
+                    </div>
+                    <p className="break-words text-2xl font-extrabold tracking-tight sm:text-3xl">
+                      {stat.value}
+                    </p>
+                  </div>
+                ))}
               </div>
+            </section>
 
-              <h3 className="mt-3 font-bold">
-                Add Event
-              </h3>
-
-              <p className="mt-1 text-sm text-slate-500">
-                Create a new event
-              </p>
-            </Link>
-
-            <Link
-              href="/payments"
-              className="rounded-2xl border bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
-            >
-              <div className="text-3xl">
-                💰
-              </div>
-
-              <h3 className="mt-3 font-bold">
-                Add Payment
-              </h3>
-
-              <p className="mt-1 text-sm text-slate-500">
-                Record a payment
-              </p>
-            </Link>
-
-            <Link
-              href="/tasks"
-              className="rounded-2xl border bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
-            >
-              <div className="text-3xl">
-                ✓
-              </div>
-
-              <h3 className="mt-3 font-bold">
-                Add Task
-              </h3>
-
-              <p className="mt-1 text-sm text-slate-500">
-                Create a new task
-              </p>
-            </Link>
-
-          </div>
-
-        </section>
-
-        {/* UPCOMING EVENTS */}
-
-        <section className="mt-6">
-
-          <div className="mb-3 flex items-center justify-between">
-
-            <div>
-
-              <h2 className="text-xl font-bold">
-                Upcoming Events
+            <section className="mb-8">
+              <h2 className="mb-4 text-lg font-bold sm:text-xl">
+                Quick Actions
               </h2>
 
-              <p className="text-sm text-slate-500">
-                Your upcoming events
-              </p>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[
+                  {
+                    label: "Add Client",
+                    href: "/clients",
+                    icon: "👤",
+                  },
+                  {
+                    label: "Add Event",
+                    href: "/weddings",
+                    icon: "💍",
+                  },
+                  {
+                    label: "Add Payment",
+                    href: "/payments",
+                    icon: "💵",
+                  },
+                  {
+                    label: "View Tasks",
+                    href: "/tasks",
+                    icon: "✅",
+                  },
+                ].map((action) => (
+                  <Link
+                    key={action.href}
+                    href={action.href}
+                    className="flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50"
+                  >
+                    <span className="text-2xl">{action.icon}</span>
+                    <span className="break-words text-sm font-semibold">
+                      {action.label}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </section>
 
-            </div>
-
-            <Link
-              href="/weddings"
-              className="text-sm font-semibold text-slate-700 hover:underline"
-            >
-              View All →
-            </Link>
-
-          </div>
-
-          <div className="rounded-2xl border bg-white shadow-sm">
-
-            {upcomingEvents.length === 0 ? (
-
-              <div className="p-8 text-center">
-
-                <div className="text-4xl">
-                  📅
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+              <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-100 p-4 sm:p-5">
+                  <h2 className="text-base font-bold sm:text-lg">
+                    Upcoming Events
+                  </h2>
+                  <Link
+                    href="/weddings"
+                    className="shrink-0 text-xs font-semibold text-indigo-700 hover:underline sm:text-sm"
+                  >
+                    View All
+                  </Link>
                 </div>
 
-                <p className="mt-3 font-semibold">
-                  No upcoming events
-                </p>
-
-                <p className="mt-1 text-sm text-slate-500">
-                  Add an event to see it here.
-                </p>
-
-              </div>
-
-            ) : (
-
-              <div className="divide-y">
-
-                {upcomingEvents.map(
-                  (event) => {
-
-                    const eventDate =
-                      event.eventStartDate ||
-                      event.weddingDate ||
-                      "";
-
-                    return (
-                      <Link
+                {upcomingEvents.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-slate-500">
+                    No events found.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {upcomingEvents.map((event) => (
+                      <div
                         key={event.id}
-                        href={`/wedding-details?id=${event.id}`}
-                        className="flex items-center justify-between gap-4 p-5 hover:bg-slate-50"
+                        className="flex min-w-0 items-start gap-3 p-4 sm:p-5"
                       >
-
-                        <div className="min-w-0">
-
-                          <p className="truncate font-bold">
-                            {event.eventName ||
-                              "Unnamed Event"}
-                          </p>
-
-                          <p className="mt-1 text-sm text-slate-500">
-                            {event.clientName ||
-                              "No client name"}
-
-                            {event.venue
-                              ? ` • ${event.venue}`
-                              : ""}
-                          </p>
-
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-pink-50 text-xl">
+                          💍
                         </div>
-
-                        <div className="shrink-0 text-right">
-
-                          <p className="text-sm font-semibold">
+                        <div className="min-w-0 flex-1">
+                          <p className="break-words text-sm font-semibold">
+                            {event.eventName ||
+                              event.clientName ||
+                              "Wedding Event"}
+                          </p>
+                          {event.clientName && event.eventName && (
+                            <p className="mt-1 break-words text-xs text-slate-500">
+                              Client: {event.clientName}
+                            </p>
+                          )}
+                          <p className="mt-1 break-words text-xs text-slate-500">
+                            📅{" "}
                             {formatDate(
-                              eventDate
+                              event.eventStartDate || event.weddingDate
                             )}
                           </p>
-
-                          <p className="mt-1 text-xs text-slate-500">
-                            📅 Event
-                          </p>
-
+                          {event.venue && (
+                            <p className="mt-1 break-words text-xs text-slate-500">
+                              📍 {event.venue}
+                            </p>
+                          )}
                         </div>
-
-                      </Link>
-                    );
-                  }
+                      </div>
+                    ))}
+                  </div>
                 )}
+              </section>
 
-              </div>
-
-            )}
-
-          </div>
-
-        </section>
-
-        {/* RECENT PAYMENTS */}
-
-        <section className="mt-6 pb-10">
-
-          <div className="mb-3 flex items-center justify-between">
-
-            <div>
-
-              <h2 className="text-xl font-bold">
-                Recent Payments
-              </h2>
-
-              <p className="text-sm text-slate-500">
-                Latest payment activity
-              </p>
-
-            </div>
-
-            <Link
-              href="/payments"
-              className="text-sm font-semibold text-slate-700 hover:underline"
-            >
-              View All →
-            </Link>
-
-          </div>
-
-          <div className="rounded-2xl border bg-white shadow-sm">
-
-            {recentPayments.length === 0 ? (
-
-              <div className="p-8 text-center">
-
-                <div className="text-4xl">
-                  💰
+              <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-100 p-4 sm:p-5">
+                  <h2 className="text-base font-bold sm:text-lg">
+                    Recent Payments
+                  </h2>
+                  <Link
+                    href="/payments"
+                    className="shrink-0 text-xs font-semibold text-indigo-700 hover:underline sm:text-sm"
+                  >
+                    View All
+                  </Link>
                 </div>
 
-                <p className="mt-3 font-semibold">
-                  No payments yet
-                </p>
-
-                <p className="mt-1 text-sm text-slate-500">
-                  Add a payment to see it here.
-                </p>
-
-              </div>
-
-            ) : (
-
-              <div className="divide-y">
-
-                {recentPayments.map(
-                  (payment) => (
-
-                    <div
-                      key={payment.id}
-                      className="flex items-center justify-between gap-4 p-5"
-                    >
-
-                      <div>
-
-                        <p className="font-semibold">
-                          {payment.clientName ||
-                            "Unknown Client"}
+                {recentPayments.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-slate-500">
+                    No payments found.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {recentPayments.map((payment) => (
+                      <div
+                        key={payment.id}
+                        className="flex min-w-0 items-center gap-3 p-4 sm:p-5"
+                      >
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-green-50 text-xl">
+                          💰
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="break-words text-sm font-semibold">
+                            {payment.clientName || "Client Payment"}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {formatDate(
+                              payment.paymentDate || payment.createdAt
+                            )}
+                          </p>
+                        </div>
+                        <p className="shrink-0 break-words text-right text-sm font-bold text-green-700">
+                          {formatMoney(Number(payment.amount || 0))}
                         </p>
-
-                        <p className="mt-1 text-xs text-slate-500">
-                          {formatDate(
-                            payment.paymentDate
-                          )}
-                        </p>
-
                       </div>
-
-                      <p className="font-bold text-green-600">
-                        +{" "}
-                        {formatMoney(
-                          Number(
-                            payment.amount || 0
-                          )
-                        )}
-                      </p>
-
-                    </div>
-
-                  )
+                    ))}
+                  </div>
                 )}
+              </section>
+            </div>
 
-              </div>
-
-            )}
-
-          </div>
-
-        </section>
-
+            <footer className="py-8 text-center text-xs text-slate-400">
+              WedFlow · Wedding Studio Management
+            </footer>
+          </>
+        )}
       </div>
-
     </main>
   );
 }
