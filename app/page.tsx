@@ -96,6 +96,31 @@ function getPaymentDate(payment: Payment) {
   return getDateValue(payment.paymentDate || payment.createdAt);
 }
 
+function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <Link href="/" className="flex min-w-0 items-center gap-2">
+      <img
+        src="/wedflow-logo.png"
+        alt="WedFlow Logo"
+        className={`${compact ? "h-10 w-10" : "h-11 w-11 sm:h-12 sm:w-12"} shrink-0 rounded-xl object-contain`}
+      />
+      <span className="min-w-0">
+        <span className="block text-xl font-extrabold tracking-tight sm:text-2xl">
+          <span className="text-slate-900">Wed</span>
+          <span className="bg-gradient-to-r from-pink-500 to-violet-600 bg-clip-text text-transparent">
+            Flow
+          </span>
+        </span>
+        {!compact && (
+          <span className="hidden text-[10px] text-slate-500 min-[360px]:block">
+            Wedding Studio Management
+          </span>
+        )}
+      </span>
+    </Link>
+  );
+}
+
 export default function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [studioName, setStudioName] = useState("Loading studio...");
@@ -106,6 +131,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -114,6 +140,7 @@ export default function Dashboard() {
       if (!active) return;
 
       if (!user) {
+        setLoggedIn(false);
         setStudioName("Please Login");
         setClients([]);
         setPayments([]);
@@ -123,6 +150,7 @@ export default function Dashboard() {
         return;
       }
 
+      setLoggedIn(true);
       setLoading(true);
       setErrorMessage("");
 
@@ -138,9 +166,7 @@ export default function Dashboard() {
         if (studioSnap.exists()) {
           const studioData = studioSnap.data();
           setStudioName(
-            studioData.studioName ||
-              studioData.name ||
-              "My Studio"
+            studioData.studioName || studioData.name || "My Studio"
           );
         } else {
           setStudioName("Studio Profile Not Found");
@@ -314,7 +340,7 @@ export default function Dashboard() {
   return (
     <main className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-3 sm:px-5">
+        <div className="mx-auto flex h-[76px] max-w-7xl items-center justify-between gap-3 px-3 sm:px-5">
           <button
             type="button"
             onClick={() => setMenuOpen(true)}
@@ -324,20 +350,15 @@ export default function Dashboard() {
             ☰
           </button>
 
-          <Link href="/" className="min-w-0 text-center">
-            <span className="block truncate text-xl font-extrabold tracking-tight text-indigo-700 sm:text-2xl">
-              WedFlow
-            </span>
-            <span className="hidden text-[10px] text-slate-500 min-[360px]:block">
-              Wedding Studio Management
-            </span>
-          </Link>
+          <div className="flex flex-1 justify-center">
+            <Brand />
+          </div>
 
           <button
             type="button"
             onClick={handleLogout}
             disabled={loggingOut}
-            className="shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50 sm:px-4 sm:text-sm"
+            className="shrink-0 rounded-xl bg-pink-50 px-3 py-2 text-xs font-semibold text-pink-700 hover:bg-pink-100 disabled:opacity-50 sm:px-4 sm:text-sm"
           >
             {loggingOut ? "Logging out..." : "Logout"}
           </button>
@@ -350,16 +371,14 @@ export default function Dashboard() {
             type="button"
             aria-label="Close menu overlay"
             onClick={() => setMenuOpen(false)}
-            className="absolute inset-0 bg-black/50"
+            className="absolute inset-0 bg-slate-950/50"
           />
 
-          <aside className="absolute inset-y-0 left-0 flex w-[min(20rem,85vw)] flex-col bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b p-4">
+          <aside className="absolute inset-y-0 left-0 flex w-[min(20rem,88vw)] flex-col bg-white shadow-2xl">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 p-4">
               <div className="min-w-0">
-                <p className="text-xl font-extrabold text-indigo-700">
-                  WedFlow
-                </p>
-                <p className="truncate text-xs text-slate-500">
+                <Brand compact />
+                <p className="mt-2 truncate text-xs text-slate-500">
                   {studioName}
                 </p>
               </div>
@@ -368,7 +387,7 @@ export default function Dashboard() {
                 type="button"
                 onClick={() => setMenuOpen(false)}
                 aria-label="Close menu"
-                className="flex h-10 w-10 items-center justify-center rounded-xl text-2xl hover:bg-slate-100"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-2xl hover:bg-slate-100"
               >
                 ×
               </button>
@@ -380,10 +399,10 @@ export default function Dashboard() {
                   key={item.href}
                   href={item.href}
                   onClick={() => setMenuOpen(false)}
-                  className={`flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${
+                  className={`flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold transition ${
                     item.href === "/"
-                      ? "bg-indigo-50 text-indigo-700"
-                      : "text-slate-700 hover:bg-slate-100"
+                      ? "bg-gradient-to-r from-pink-500 to-violet-600 text-white shadow-sm"
+                      : "text-slate-700 hover:bg-pink-50 hover:text-violet-700"
                   }`}
                 >
                   <span className="text-lg">{item.icon}</span>
@@ -392,7 +411,7 @@ export default function Dashboard() {
               ))}
             </nav>
 
-            <div className="border-t p-3">
+            <div className="border-t border-slate-100 p-3">
               <button
                 type="button"
                 onClick={handleLogout}
@@ -407,14 +426,26 @@ export default function Dashboard() {
       )}
 
       <div className="mx-auto max-w-7xl px-3 py-5 sm:px-5 sm:py-7 lg:px-8">
-        <section className="mb-6 rounded-2xl bg-gradient-to-r from-indigo-700 to-violet-600 p-5 text-white shadow-md sm:mb-8 sm:p-7">
-          <p className="mb-2 text-sm text-indigo-100">Welcome to WedFlow</p>
-          <h1 className="break-words text-2xl font-bold sm:text-3xl">
-            {studioName}
-          </h1>
-          <p className="mt-2 text-sm text-indigo-100">
-            Manage your studio, clients, payments and events in one place.
-          </p>
+        <section className="relative mb-6 overflow-hidden rounded-3xl bg-gradient-to-r from-violet-700 via-purple-600 to-pink-500 p-5 text-white shadow-lg sm:mb-8 sm:p-8">
+          <div className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-white/10 blur-2xl" />
+          <div className="relative flex items-center gap-4">
+            <img
+              src="/wedflow-logo.png"
+              alt=""
+              className="hidden h-20 w-20 rounded-2xl bg-white/95 p-1 object-contain shadow sm:block"
+            />
+            <div className="min-w-0">
+              <p className="mb-2 text-sm font-medium text-pink-100">
+                Welcome to WedFlow ✨
+              </p>
+              <h1 className="break-words text-2xl font-extrabold sm:text-3xl">
+                {studioName}
+              </h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-white/90">
+                Manage your studio, clients, payments and events in one place.
+              </p>
+            </div>
+          </div>
         </section>
 
         {errorMessage && (
@@ -430,15 +461,20 @@ export default function Dashboard() {
           </div>
         )}
 
-        {!auth.currentUser && !loading ? (
+        {!loggedIn && !loading ? (
           <section className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+            <img
+              src="/wedflow-logo.png"
+              alt="WedFlow Logo"
+              className="mx-auto mb-4 h-24 w-24 object-contain"
+            />
             <p className="text-lg font-bold">Please Login</p>
             <p className="mt-2 text-sm text-slate-600">
               Manage your wedding studio from one place.
             </p>
             <Link
               href="/login"
-              className="mt-5 inline-flex rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-700"
+              className="mt-5 inline-flex rounded-xl bg-gradient-to-r from-pink-500 to-violet-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90"
             >
               Go to Login
             </Link>
@@ -450,7 +486,7 @@ export default function Dashboard() {
                 <h2 className="text-lg font-bold sm:text-xl">
                   Studio Overview
                 </h2>
-                <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-500 shadow-sm">
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">
                   Live data
                 </span>
               </div>
@@ -459,10 +495,12 @@ export default function Dashboard() {
                 {stats.map((stat) => (
                   <div
                     key={stat.label}
-                    className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md sm:p-5"
+                    className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md sm:p-5"
                   >
                     <div className="mb-4 flex items-center justify-between gap-2">
-                      <p className="text-sm text-slate-500">{stat.label}</p>
+                      <p className="text-sm font-medium text-slate-500">
+                        {stat.label}
+                      </p>
                       <span
                         className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-xl ${stat.color}`}
                       >
@@ -484,31 +522,15 @@ export default function Dashboard() {
 
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {[
-                  {
-                    label: "Add Client",
-                    href: "/clients",
-                    icon: "👤",
-                  },
-                  {
-                    label: "Add Event",
-                    href: "/weddings",
-                    icon: "💍",
-                  },
-                  {
-                    label: "Add Payment",
-                    href: "/payments",
-                    icon: "💵",
-                  },
-                  {
-                    label: "View Tasks",
-                    href: "/tasks",
-                    icon: "✅",
-                  },
+                  { label: "Add Client", href: "/clients", icon: "👤" },
+                  { label: "Add Event", href: "/weddings", icon: "💍" },
+                  { label: "Add Payment", href: "/payments", icon: "💵" },
+                  { label: "View Tasks", href: "/tasks", icon: "✅" },
                 ].map((action) => (
                   <Link
                     key={action.href}
                     href={action.href}
-                    className="flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50"
+                    className="flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-pink-300 hover:bg-pink-50"
                   >
                     <span className="text-2xl">{action.icon}</span>
                     <span className="break-words text-sm font-semibold">
@@ -527,7 +549,7 @@ export default function Dashboard() {
                   </h2>
                   <Link
                     href="/weddings"
-                    className="shrink-0 text-xs font-semibold text-indigo-700 hover:underline sm:text-sm"
+                    className="shrink-0 text-xs font-semibold text-violet-700 hover:underline sm:text-sm"
                   >
                     View All
                   </Link>
@@ -559,10 +581,7 @@ export default function Dashboard() {
                             </p>
                           )}
                           <p className="mt-1 break-words text-xs text-slate-500">
-                            📅{" "}
-                            {formatDate(
-                              event.eventStartDate || event.weddingDate
-                            )}
+                            📅 {formatDate(event.eventStartDate || event.weddingDate)}
                           </p>
                           {event.venue && (
                             <p className="mt-1 break-words text-xs text-slate-500">
@@ -583,7 +602,7 @@ export default function Dashboard() {
                   </h2>
                   <Link
                     href="/payments"
-                    className="shrink-0 text-xs font-semibold text-indigo-700 hover:underline sm:text-sm"
+                    className="shrink-0 text-xs font-semibold text-violet-700 hover:underline sm:text-sm"
                   >
                     View All
                   </Link>
@@ -608,12 +627,10 @@ export default function Dashboard() {
                             {payment.clientName || "Client Payment"}
                           </p>
                           <p className="mt-1 text-xs text-slate-500">
-                            {formatDate(
-                              payment.paymentDate || payment.createdAt
-                            )}
+                            {formatDate(payment.paymentDate || payment.createdAt)}
                           </p>
                         </div>
-                        <p className="shrink-0 break-words text-right text-sm font-bold text-green-700">
+                        <p className="shrink-0 text-right text-sm font-bold text-green-700">
                           {formatMoney(Number(payment.amount || 0))}
                         </p>
                       </div>
@@ -624,6 +641,9 @@ export default function Dashboard() {
             </div>
 
             <footer className="py-8 text-center text-xs text-slate-400">
+              <div className="mb-2 flex justify-center">
+                <Brand compact />
+              </div>
               WedFlow · Wedding Studio Management
             </footer>
           </>
