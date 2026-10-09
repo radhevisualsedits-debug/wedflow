@@ -1,8 +1,15 @@
+
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../lib/firebase";
+import { useEffect, useMemo, useState } from "react";
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+} from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth, db } from "../../lib/firebase";
 
 type EventItem = {
   id: string;
@@ -10,15 +17,15 @@ type EventItem = {
   weddingName?: string;
   clientName?: string;
   weddingDate?: string;
-  totalAmount?: number;
-  advancePaid?: number;
+  totalAmount?: number | string;
+  advancePaid?: number | string;
   status?: string;
 };
 
 type Payment = {
   id: string;
-  amount?: number;
-  paymentAmount?: number;
+  amount?: number | string;
+  paymentAmount?: number | string;
   paymentDate?: string;
   date?: string;
 };
@@ -27,7 +34,7 @@ type Expense = {
   id: string;
   title?: string;
   category?: string;
-  amount?: number;
+  amount?: number | string;
   date?: string;
   note?: string;
 };
@@ -35,111 +42,180 @@ type Expense = {
 const money = (value: number) =>
   `₹${Number(value || 0).toLocaleString("en-IN")}`;
 
-const getMonthKey = (dateString?: string) => {
-  if (!dateString) return "";
+const toAmount = (value: number | string | undefined) =>
+  Number(value || 0);
 
-  const date = new Date(dateString);
+const parseDate = (value?: string) => {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
 
-  if (Number.isNaN(date.getTime())) return "";
+const getMonthKey = (value?: string) => {
+  const date = parseDate(value);
+  if (!date) return "";
 
   return `${date.getFullYear()}-${String(
     date.getMonth() + 1
   ).padStart(2, "0")}`;
 };
 
-const getMonthLabel = (monthKey: string) => {
-  const [year, month] = monthKey.split("-");
-
-  const date = new Date(
+const getMonthLabel = (key: string) => {
+  const [year, month] = key.split("-");
+  return new Date(
     Number(year),
     Number(month) - 1,
     1
-  );
-
-  return date.toLocaleDateString("en-IN", {
+  ).toLocaleDateString("en-IN", {
     month: "short",
     year: "numeric",
   });
 };
 
-export default function ReportsPage() {
-  const reportRef = useRef<HTMLDivElement>(null);
+const cardStyle: React.CSSProperties = {
+  background: "#ffffff",
+  padding: 20,
+  borderRadius: 14,
+  boxShadow: "0 3px 15px #0000000a",
+  minWidth: 0,
+};
 
+const cellStyle: React.CSSProperties = {
+  padding: "12px 10px",
+  borderBottom: "1px solid #e5e7eb",
+  textAlign: "left",
+  fontSize: 13,
+};
+
+export default function ReportsPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
-
-  const loadReports = async () => {
-    try {
-      setLoading(true);
-
-      const [eventsSnap, paymentsSnap, expensesSnap] =
-        await Promise.all([
-          getDocs(collection(db, "weddings")),
-          getDocs(collection(db, "payments")),
-          getDocs(collection(db, "expenses")),
-        ]);
-
-      setEvents(
-        eventsSnap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as EventItem[]
-      );
-
-      setPayments(
-        paymentsSnap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Payment[]
-      );
-
-      setExpenses(
-        expensesSnap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Expense[]
-      );
-    } catch (error) {
-      console.error("Reports loading error:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [error, setError] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    loadReports();
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUserId(user?.uid ?? null);
+      setAuthReady(true);
+    });
+
+    return unsubscribe;
   }, []);
 
-  const totalRevenue = useMemo(() => {
-    return events.reduce(
-      (total, event) =>
-        total + Number(event.totalAmount || 0),
-      0
-    );
-  }, [events]);
+  useEffect(() => {
+    if (!authReady) return;
 
-  const totalAdvance = useMemo(() => {
-    return events.reduce(
-      (total, event) =>
-        total + Number(event.advancePaid || 0),
-      0
-    );
-  }, [events]);
+    let cancelled = false;
 
-  const totalPaymentRecords = useMemo(() => {
-    return payments.reduce(
-      (total, payment) =>
-        total +
-        Number(
-          payment.amount ??
-            payment.paymentAmount ??
-            0
-        ),
-      0
-    );
-  }, [payments]);
+    async function loadReports() {
+      setLoading(true);
+      setError("");
+
+      if (!userId) {
+        setEvents([]);
+        setPayments([]);
+        setExpenses([]);
+        setError("રિપોર્ટ જોવા માટે પહેલાં લૉગિન કરો.");
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const eventQuery = query(
+          collection(db, "weddings"),
+          where("studioId", "==", userId)
+        );
+
+        const paymentQuery = query(
+          collection(db, "payments"),
+          where("studioId", "==", userId)
+        );
+
+        const expenseQuery = query(
+          collection(db, "expenses"),
+          where("studioId", "==", userId)
+        );
+
+        const [eventSnap, paymentSnap, expenseSnap] =
+          await Promise.all([
+            getDocs(eventQuery),
+            getDocs(paymentQuery),
+            getDocs(expenseQuery),
+          ]);
+
+        if (cancelled) return;
+
+        setEvents(
+          eventSnap.docs.map((item) => ({
+            ...item.data(),
+            id: item.id,
+          })) as EventItem[]
+        );
+
+        setPayments(
+          paymentSnap.docs.map((item) => ({
+            ...item.data(),
+            id: item.id,
+          })) as Payment[]
+        );
+
+        setExpenses(
+          expenseSnap.docs.map((item) => ({
+            ...item.data(),
+            id: item.id,
+          })) as Expense[]
+        );
+      } catch (err) {
+        console.error("Reports loading error:", err);
+
+        if (!cancelled) {
+          setError(
+            "રિપોર્ટ લોડ થયો નથી. Firestore Rules અને Console Error તપાસો."
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    loadReports();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, userId]);
+
+  const totalRevenue = useMemo(
+    () =>
+      events.reduce(
+        (sum, event) => sum + toAmount(event.totalAmount),
+        0
+      ),
+    [events]
+  );
+
+  const totalAdvance = useMemo(
+    () =>
+      events.reduce(
+        (sum, event) => sum + toAmount(event.advancePaid),
+        0
+      ),
+    [events]
+  );
+
+  const totalPaymentRecords = useMemo(
+    () =>
+      payments.reduce(
+        (sum, payment) =>
+          sum +
+          toAmount(payment.amount ?? payment.paymentAmount),
+        0
+      ),
+    [payments]
+  );
 
   const totalPaid = Math.max(
     totalAdvance,
@@ -151,196 +227,139 @@ export default function ReportsPage() {
     totalRevenue - totalPaid
   );
 
-  const totalExpenses = useMemo(() => {
-    return expenses.reduce(
-      (total, expense) =>
-        total + Number(expense.amount || 0),
-      0
-    );
-  }, [expenses]);
+  const totalExpenses = useMemo(
+    () =>
+      expenses.reduce(
+        (sum, expense) => sum + toAmount(expense.amount),
+        0
+      ),
+    [expenses]
+  );
 
   const netProfit = totalRevenue - totalExpenses;
 
   const statusCounts = {
     Pending: events.filter(
-      (event) => event.status === "Pending"
+      (event) => event.status?.toLowerCase() === "pending"
     ).length,
-
     Confirmed: events.filter(
-      (event) => event.status === "Confirmed"
+      (event) => event.status?.toLowerCase() === "confirmed"
     ).length,
-
     "In Progress": events.filter(
-      (event) => event.status === "In Progress"
+      (event) => event.status?.toLowerCase() === "in progress"
     ).length,
-
     Completed: events.filter(
-      (event) => event.status === "Completed"
+      (event) => event.status?.toLowerCase() === "completed"
     ).length,
   };
 
-  const expenseByCategory = useMemo(() => {
-    const result: Record<string, number> = {};
+  const categoryTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
 
     expenses.forEach((expense) => {
       const category = expense.category || "Other";
-
-      result[category] =
-        (result[category] || 0) +
-        Number(expense.amount || 0);
+      totals[category] =
+        (totals[category] || 0) + toAmount(expense.amount);
     });
 
-    return Object.entries(result).sort(
-      (a, b) => b[1] - a[1]
-    );
+    return Object.entries(totals).sort((a, b) => b[1] - a[1]);
   }, [expenses]);
 
   const monthlyReport = useMemo(() => {
-    const months: Record<
+    const totals: Record<
       string,
-      {
-        income: number;
-        expense: number;
-      }
+      { income: number; expense: number }
     > = {};
 
     payments.forEach((payment) => {
-      const date =
-        payment.paymentDate ||
-        payment.date;
+      const key = getMonthKey(
+        payment.paymentDate || payment.date
+      );
+      if (!key) return;
 
-      const month = getMonthKey(date);
-
-      if (!month) return;
-
-      if (!months[month]) {
-        months[month] = {
-          income: 0,
-          expense: 0,
-        };
+      if (!totals[key]) {
+        totals[key] = { income: 0, expense: 0 };
       }
 
-      months[month].income += Number(
-        payment.amount ??
-          payment.paymentAmount ??
-          0
+      totals[key].income += toAmount(
+        payment.amount ?? payment.paymentAmount
       );
     });
 
     expenses.forEach((expense) => {
-      const month = getMonthKey(
-        expense.date
-      );
+      const key = getMonthKey(expense.date);
+      if (!key) return;
 
-      if (!month) return;
-
-      if (!months[month]) {
-        months[month] = {
-          income: 0,
-          expense: 0,
-        };
+      if (!totals[key]) {
+        totals[key] = { income: 0, expense: 0 };
       }
 
-      months[month].expense += Number(
-        expense.amount || 0
-      );
+      totals[key].expense += toAmount(expense.amount);
     });
 
-    return Object.entries(months)
-      .sort(([a], [b]) =>
-        a.localeCompare(b)
-      )
-      .map(([month, values]) => ({
-        month,
-        label: getMonthLabel(month),
-        income: values.income,
-        expense: values.expense,
-        profit:
-          values.income - values.expense,
+    return Object.entries(totals)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => ({
+        key,
+        label: getMonthLabel(key),
+        income: value.income,
+        expense: value.expense,
+        profit: value.income - value.expense,
       }));
   }, [payments, expenses]);
 
-  const maxMonthlyValue = useMemo(() => {
-    let max = 0;
+  const recentExpenses = useMemo(
+    () =>
+      [...expenses]
+        .sort((a, b) => {
+          const dateA = parseDate(a.date)?.getTime() || 0;
+          const dateB = parseDate(b.date)?.getTime() || 0;
+          return dateB - dateA;
+        })
+        .slice(0, 10),
+    [expenses]
+  );
 
-    monthlyReport.forEach((item) => {
-      max = Math.max(
-        max,
-        item.income,
-        item.expense,
-        Math.abs(item.profit)
-      );
-    });
+  const formatDate = (value?: string) => {
+    const date = parseDate(value);
+    return date
+      ? date.toLocaleDateString("en-IN")
+      : value || "—";
+  };
 
-    return max || 1;
-  }, [monthlyReport]);
-
-  const recentExpenses = [...expenses]
-    .sort((a, b) => {
-      const dateA = a.date
-        ? new Date(a.date).getTime()
-        : 0;
-
-      const dateB = b.date
-        ? new Date(b.date).getTime()
-        : 0;
-
-      return dateB - dateA;
-    })
-    .slice(0, 10);
-
-  const formatDate = (date?: string) => {
-    if (!date) return "—";
-
-    const parsed = new Date(date);
-
-    if (Number.isNaN(parsed.getTime())) {
-      return date;
-    }
-
-    return parsed.toLocaleDateString(
-      "en-IN"
+  if (!authReady || loading) {
+    return (
+      <main style={{ padding: 40, fontFamily: "Arial" }}>
+        <h2>WedFlow Reports</h2>
+        <p>ડેટા લોડ થઈ રહ્યો છે...</p>
+      </main>
     );
-  };
-
-  const printReport = () => {
-    window.print();
-  };
+  }
 
   return (
-    <>
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "#f3f4f6",
+        color: "#111827",
+        padding: 20,
+        fontFamily: "Arial, sans-serif",
+      }}
+    >
       <style jsx global>{`
         @media print {
-          body {
-            background: white !important;
-          }
-
           .no-print {
             display: none !important;
           }
-
-          .print-area {
-            width: 100% !important;
-            max-width: 100% !important;
-            margin: 0 !important;
-            padding: 10px !important;
+          body {
+            background: white !important;
           }
-
-          .print-card {
-            box-shadow: none !important;
+          main {
+            padding: 0 !important;
+          }
+          section {
             break-inside: avoid;
-            page-break-inside: avoid;
           }
-
-          table {
-            page-break-inside: auto;
-          }
-
-          tr {
-            page-break-inside: avoid;
-            page-break-after: auto;
-          }
-
           @page {
             size: A4;
             margin: 12mm;
@@ -348,1391 +367,384 @@ export default function ReportsPage() {
         }
       `}</style>
 
-      <main
+      <header
+        className="no-print"
         style={{
-          minHeight: "100vh",
-          background: "#f5f6fa",
-          fontFamily: "Arial, sans-serif",
-          color: "#111827",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 12,
+          background: "#111827",
+          color: "white",
+          padding: 20,
+          borderRadius: 14,
+          marginBottom: 20,
         }}
       >
-        {/* HEADER */}
+        <div>
+          <h1 style={{ margin: 0 }}>WedFlow</h1>
+          <p style={{ margin: "5px 0 0" }}>
+            Reports & Financial Summary
+          </p>
+        </div>
 
-        <header
-          className="no-print"
-          style={{
-            background: "#111827",
-            color: "white",
-            padding: "18px 24px",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 15,
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <div
-              style={{
-                fontSize: 25,
-                fontWeight: 800,
-              }}
-            >
-              WedFlow
-            </div>
-
-            <div
-              style={{
-                fontSize: 13,
-                opacity: 0.75,
-                marginTop: 3,
-              }}
-            >
-              Reports & Financial Summary
-            </div>
-          </div>
-
-          <div
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <a
+            href="/"
             style={{
-              display: "flex",
-              gap: 10,
-              flexWrap: "wrap",
+              color: "white",
+              background: "#374151",
+              padding: "10px 14px",
+              borderRadius: 8,
+              textDecoration: "none",
             }}
           >
-            <a
-              href="/"
-              style={{
-                textDecoration: "none",
-                color: "white",
-                background: "#374151",
-                padding: "10px 15px",
-                borderRadius: 9,
-                fontSize: 14,
-                fontWeight: 700,
-              }}
-            >
-              ← Dashboard
-            </a>
+            ← Dashboard
+          </a>
 
-            <button
-              onClick={loadReports}
-              style={{
-                border: "none",
-                color: "white",
-                background: "#2563eb",
-                padding: "10px 15px",
-                borderRadius: 9,
-                fontSize: 14,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              ↻ Refresh
-            </button>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              border: 0,
+              padding: "10px 14px",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            ↻ Refresh
+          </button>
 
-            <button
-              onClick={printReport}
-              style={{
-                border: "none",
-                color: "white",
-                background: "#16a34a",
-                padding: "10px 15px",
-                borderRadius: 9,
-                fontSize: 14,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              🖨️ Print / Save PDF
-            </button>
-          </div>
-        </header>
-
-        {/* PRINT TITLE */}
-
-        <div
-          className="print-only"
-          style={{
-            display: "none",
-          }}
-        >
-          <h1>WedFlow</h1>
-          <p>Reports & Financial Summary</p>
+          <button
+            onClick={() => window.print()}
+            style={{
+              border: 0,
+              padding: "10px 14px",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            Print / Save PDF
+          </button>
         </div>
+      </header>
 
-        <div
-          ref={reportRef}
-          className="print-area"
+      {error && (
+        <section
           style={{
-            maxWidth: 1450,
-            margin: "0 auto",
-            padding: 24,
+            ...cardStyle,
+            marginBottom: 20,
+            border: "1px solid #fca5a5",
+            color: "#b91c1c",
           }}
         >
-          {loading ? (
+          <strong>ડેટા લોડ કરવામાં સમસ્યા</strong>
+          <p>{error}</p>
+          <button onClick={() => window.location.reload()}>
+            ફરી પ્રયાસ કરો
+          </button>
+        </section>
+      )}
+
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+          gap: 16,
+          marginBottom: 22,
+        }}
+      >
+        {[
+          ["Total Revenue", totalRevenue, "💰"],
+          ["Total Paid", totalPaid, "💳"],
+          ["Pending Amount", pendingAmount, "⏳"],
+          ["Total Expenses", totalExpenses, "💸"],
+          ["Net Profit", netProfit, "📈"],
+        ].map(([title, value, icon]) => (
+          <div key={String(title)} style={cardStyle}>
+            <div style={{ fontSize: 25 }}>{icon}</div>
+            <p style={{ color: "#6b7280", marginBottom: 6 }}>
+              {title}
+            </p>
+            <strong style={{ fontSize: 24 }}>
+              {money(Number(value))}
+            </strong>
+          </div>
+        ))}
+      </section>
+
+      <section style={{ ...cardStyle, marginBottom: 22 }}>
+        <h2>💍 Event Summary</h2>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {[
+            ["Total Events", events.length],
+            ["Pending", statusCounts.Pending],
+            ["Confirmed", statusCounts.Confirmed],
+            ["In Progress", statusCounts["In Progress"]],
+            ["Completed", statusCounts.Completed],
+          ].map(([label, value]) => (
             <div
-              className="print-card"
+              key={String(label)}
               style={{
-                background: "white",
-                borderRadius: 14,
-                padding: 40,
-                textAlign: "center",
-                boxShadow:
-                  "0 4px 18px rgba(0,0,0,0.06)",
+                background: "#f9fafb",
+                padding: 16,
+                borderRadius: 10,
               }}
             >
-              <h2>Loading Reports...</h2>
-
-              <p
-                style={{
-                  color: "#6b7280",
-                }}
-              >
-                Please wait.
-              </p>
+              <div style={{ color: "#6b7280", fontSize: 13 }}>
+                {label}
+              </div>
+              <strong style={{ fontSize: 24 }}>{value}</strong>
             </div>
-          ) : (
-            <>
-              {/* REPORT TITLE */}
+          ))}
+        </div>
+      </section>
 
-              <section
-                className="print-card"
-                style={{
-                  background: "white",
-                  borderRadius: 16,
-                  padding: 22,
-                  marginBottom: 20,
-                  boxShadow:
-                    "0 4px 18px rgba(0,0,0,0.06)",
-                }}
-              >
+      <section style={{ ...cardStyle, marginBottom: 22 }}>
+        <h2>📊 Month-wise Financial Report</h2>
+
+        {monthlyReport.length === 0 ? (
+          <p style={{ color: "#6b7280" }}>
+            Monthly payment or expense data મળ્યો નથી.
+          </p>
+        ) : (
+          monthlyReport.map((item) => (
+            <div
+              key={item.key}
+              style={{
+                padding: "14px 0",
+                borderBottom: "1px solid #e5e7eb",
+              }}
+            >
+              <strong>{item.label}</strong>
+
+              {[
+                ["Income", item.income, "#2563eb"],
+                ["Expense", item.expense, "#dc2626"],
+                ["Profit", item.profit, "#16a34a"],
+              ].map(([label, value, color]) => (
                 <div
-                  style={{
-                    display: "flex",
-                    justifyContent:
-                      "space-between",
-                    alignItems: "center",
-                    gap: 15,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <div>
-                    <h1
-                      style={{
-                        margin: 0,
-                        fontSize: 28,
-                      }}
-                    >
-                      WedFlow
-                    </h1>
-
-                    <p
-                      style={{
-                        margin:
-                          "5px 0 0",
-                        color: "#6b7280",
-                      }}
-                    >
-                      Reports & Financial Summary
-                    </p>
-                  </div>
-
-                  <div
-                    style={{
-                      color: "#6b7280",
-                      fontSize: 13,
-                    }}
-                  >
-                    Generated:{" "}
-                    {new Date().toLocaleDateString(
-                      "en-IN"
-                    )}
-                  </div>
-                </div>
-              </section>
-
-              {/* FINANCIAL CARDS */}
-
-              <section
-                className="print-card"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns:
-                    "repeat(auto-fit, minmax(210px, 1fr))",
-                  gap: 16,
-                  marginBottom: 24,
-                }}
-              >
-                <ReportCard
-                  title="Total Revenue"
-                  value={money(totalRevenue)}
-                  icon="💰"
-                  background="#ecfdf5"
-                />
-
-                <ReportCard
-                  title="Total Paid"
-                  value={money(totalPaid)}
-                  icon="💳"
-                  background="#eff6ff"
-                />
-
-                <ReportCard
-                  title="Pending Amount"
-                  value={money(pendingAmount)}
-                  icon="⏳"
-                  background="#fff7ed"
-                />
-
-                <ReportCard
-                  title="Total Expenses"
-                  value={money(totalExpenses)}
-                  icon="💸"
-                  background="#fef2f2"
-                />
-
-                <ReportCard
-                  title="Net Profit"
-                  value={money(netProfit)}
-                  icon="📈"
-                  background="#f5f3ff"
-                />
-              </section>
-
-              {/* MONTHLY REPORT */}
-
-              <section
-                className="print-card"
-                style={{
-                  background: "white",
-                  borderRadius: 16,
-                  padding: 22,
-                  boxShadow:
-                    "0 4px 18px rgba(0,0,0,0.06)",
-                  marginBottom: 24,
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent:
-                      "space-between",
-                    alignItems: "center",
-                    gap: 10,
-                    flexWrap: "wrap",
-                    marginBottom: 20,
-                  }}
-                >
-                  <div>
-                    <h2
-                      style={{
-                        margin: 0,
-                        fontSize: 21,
-                      }}
-                    >
-                      📊 Month-wise Financial Report
-                    </h2>
-
-                    <p
-                      style={{
-                        margin:
-                          "6px 0 0",
-                        color: "#6b7280",
-                        fontSize: 13,
-                      }}
-                    >
-                      Monthly Income, Expense & Profit
-                    </p>
-                  </div>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 15,
-                      flexWrap: "wrap",
-                      fontSize: 13,
-                      fontWeight: 700,
-                    }}
-                  >
-                    <span>🟦 Income</span>
-                    <span>🟥 Expense</span>
-                    <span>🟩 Profit</span>
-                  </div>
-                </div>
-
-                {monthlyReport.length ===
-                0 ? (
-                  <div
-                    style={{
-                      padding: 35,
-                      textAlign: "center",
-                      background: "#f9fafb",
-                      borderRadius: 12,
-                      color: "#6b7280",
-                    }}
-                  >
-                    No monthly payment or
-                    expense data available yet.
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection:
-                        "column",
-                      gap: 22,
-                    }}
-                  >
-                    {monthlyReport.map(
-                      (item) => {
-                        const incomeWidth =
-                          Math.max(
-                            4,
-                            (item.income /
-                              maxMonthlyValue) *
-                              100
-                          );
-
-                        const expenseWidth =
-                          Math.max(
-                            4,
-                            (item.expense /
-                              maxMonthlyValue) *
-                              100
-                          );
-
-                        const profitWidth =
-                          Math.max(
-                            4,
-                            (Math.abs(
-                              item.profit
-                            ) /
-                              maxMonthlyValue) *
-                              100
-                          );
-
-                        return (
-                          <div
-                            key={item.month}
-                            style={{
-                              borderBottom:
-                                "1px solid #f0f0f0",
-                              paddingBottom: 18,
-                            }}
-                          >
-                            <div
-                              style={{
-                                display: "flex",
-                                justifyContent:
-                                  "space-between",
-                                alignItems:
-                                  "center",
-                                marginBottom: 10,
-                                gap: 10,
-                              }}
-                            >
-                              <strong>
-                                {item.label}
-                              </strong>
-
-                              <strong
-                                style={{
-                                  color:
-                                    item.profit >=
-                                    0
-                                      ? "#15803d"
-                                      : "#dc2626",
-                                }}
-                              >
-                                Profit:{" "}
-                                {money(
-                                  item.profit
-                                )}
-                              </strong>
-                            </div>
-
-                            <MonthlyBar
-                              label="Income"
-                              value={
-                                item.income
-                              }
-                              width={
-                                incomeWidth
-                              }
-                              color="#2563eb"
-                            />
-
-                            <MonthlyBar
-                              label="Expense"
-                              value={
-                                item.expense
-                              }
-                              width={
-                                expenseWidth
-                              }
-                              color="#dc2626"
-                            />
-
-                            <MonthlyBar
-                              label="Profit"
-                              value={
-                                item.profit
-                              }
-                              width={
-                                profitWidth
-                              }
-                              color={
-                                item.profit >=
-                                0
-                                  ? "#16a34a"
-                                  : "#dc2626"
-                              }
-                            />
-                          </div>
-                        );
-                      }
-                    )}
-                  </div>
-                )}
-              </section>
-
-              {/* EVENT SUMMARY */}
-
-              <section
-                className="print-card"
-                style={{
-                  background: "white",
-                  borderRadius: 16,
-                  padding: 22,
-                  boxShadow:
-                    "0 4px 18px rgba(0,0,0,0.06)",
-                  marginBottom: 24,
-                }}
-              >
-                <h2
-                  style={{
-                    marginTop: 0,
-                    marginBottom: 18,
-                    fontSize: 21,
-                  }}
-                >
-                  💍 Event Summary
-                </h2>
-
-                <div
+                  key={String(label)}
                   style={{
                     display: "grid",
-                    gridTemplateColumns:
-                      "repeat(auto-fit, minmax(150px, 1fr))",
-                    gap: 14,
-                  }}
-                >
-                  <SummaryBox
-                    title="Total Events"
-                    value={events.length}
-                    icon="💍"
-                  />
-
-                  <SummaryBox
-                    title="Pending"
-                    value={
-                      statusCounts.Pending
-                    }
-                    icon="⏳"
-                  />
-
-                  <SummaryBox
-                    title="Confirmed"
-                    value={
-                      statusCounts.Confirmed
-                    }
-                    icon="✅"
-                  />
-
-                  <SummaryBox
-                    title="In Progress"
-                    value={
-                      statusCounts["In Progress"]
-                    }
-                    icon="🔄"
-                  />
-
-                  <SummaryBox
-                    title="Completed"
-                    value={
-                      statusCounts.Completed
-                    }
-                    icon="🏆"
-                  />
-                </div>
-              </section>
-
-              {/* EXPENSE CATEGORY */}
-
-              <section
-                className="print-card"
-                style={{
-                  background: "white",
-                  borderRadius: 16,
-                  padding: 22,
-                  boxShadow:
-                    "0 4px 18px rgba(0,0,0,0.06)",
-                  marginBottom: 24,
-                }}
-              >
-                <h2
-                  style={{
-                    marginTop: 0,
-                    marginBottom: 20,
-                    fontSize: 21,
-                  }}
-                >
-                  💸 Expense by Category
-                </h2>
-
-                {expenseByCategory.length ===
-                0 ? (
-                  <div
-                    style={{
-                      textAlign: "center",
-                      padding: 30,
-                      color: "#6b7280",
-                      background: "#f9fafb",
-                      borderRadius: 12,
-                    }}
-                  >
-                    No expenses added yet.
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection:
-                        "column",
-                      gap: 16,
-                    }}
-                  >
-                    {expenseByCategory.map(
-                      ([category, amount]) => {
-                        const percentage =
-                          totalExpenses > 0
-                            ? (amount /
-                                totalExpenses) *
-                              100
-                            : 0;
-
-                        return (
-                          <div
-                            key={category}
-                          >
-                            <div
-                              style={{
-                                display:
-                                  "flex",
-                                justifyContent:
-                                  "space-between",
-                                marginBottom: 7,
-                              }}
-                            >
-                              <strong>
-                                {category}
-                              </strong>
-
-                              <span
-                                style={{
-                                  color:
-                                    "#6b7280",
-                                  fontSize: 13,
-                                }}
-                              >
-                                {money(amount)}
-                              </span>
-                            </div>
-
-                            <div
-                              style={{
-                                height: 10,
-                                background:
-                                  "#e5e7eb",
-                                borderRadius: 99,
-                                overflow:
-                                  "hidden",
-                              }}
-                            >
-                              <div
-                                style={{
-                                  height:
-                                    "100%",
-                                  width: `${percentage}%`,
-                                  background:
-                                    "#ef4444",
-                                  borderRadius:
-                                    99,
-                                }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      }
-                    )}
-                  </div>
-                )}
-              </section>
-
-              {/* EVENT FINANCIAL REPORT */}
-
-              <section
-                className="print-card"
-                style={{
-                  background: "white",
-                  borderRadius: 16,
-                  padding: 22,
-                  boxShadow:
-                    "0 4px 18px rgba(0,0,0,0.06)",
-                  marginBottom: 24,
-                }}
-              >
-                <h2
-                  style={{
-                    marginTop: 0,
-                    marginBottom: 18,
-                    fontSize: 21,
-                  }}
-                >
-                  📋 Event Financial Report
-                </h2>
-
-                <div
-                  style={{
-                    overflowX: "auto",
-                  }}
-                >
-                  <table
-                    style={{
-                      width: "100%",
-                      borderCollapse:
-                        "collapse",
-                      minWidth: 850,
-                    }}
-                  >
-                    <thead>
-                      <tr>
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Event
-                        </th>
-
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Client
-                        </th>
-
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Date
-                        </th>
-
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Status
-                        </th>
-
-                        <th
-                          style={{
-                            ...tableHeaderStyle,
-                            textAlign:
-                              "right",
-                          }}
-                        >
-                          Total
-                        </th>
-
-                        <th
-                          style={{
-                            ...tableHeaderStyle,
-                            textAlign:
-                              "right",
-                          }}
-                        >
-                          Paid
-                        </th>
-
-                        <th
-                          style={{
-                            ...tableHeaderStyle,
-                            textAlign:
-                              "right",
-                          }}
-                        >
-                          Pending
-                        </th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {events.length ===
-                      0 ? (
-                        <tr>
-                          <td
-                            colSpan={7}
-                            style={{
-                              padding: 30,
-                              textAlign:
-                                "center",
-                              color:
-                                "#6b7280",
-                            }}
-                          >
-                            No events found.
-                          </td>
-                        </tr>
-                      ) : (
-                        events.map((event) => {
-                          const total =
-                            Number(
-                              event.totalAmount ||
-                                0
-                            );
-
-                          const paid =
-                            Number(
-                              event.advancePaid ||
-                                0
-                            );
-
-                          const pending =
-                            Math.max(
-                              0,
-                              total - paid
-                            );
-
-                          return (
-                            <tr
-                              key={event.id}
-                            >
-                              <td
-                                style={
-                                  tableCellStyle
-                                }
-                              >
-                                <strong>
-                                  {event.eventName ||
-                                    event.weddingName ||
-                                    "—"}
-                                </strong>
-                              </td>
-
-                              <td
-                                style={
-                                  tableCellStyle
-                                }
-                              >
-                                {event.clientName ||
-                                  "—"}
-                              </td>
-
-                              <td
-                                style={
-                                  tableCellStyle
-                                }
-                              >
-                                {formatDate(
-                                  event.weddingDate
-                                )}
-                              </td>
-
-                              <td
-                                style={
-                                  tableCellStyle
-                                }
-                              >
-                                <span
-                                  style={{
-                                    display:
-                                      "inline-block",
-                                    padding:
-                                      "5px 9px",
-                                    borderRadius:
-                                      20,
-                                    background:
-                                      "#f3f4f6",
-                                    fontSize: 12,
-                                    fontWeight:
-                                      700,
-                                  }}
-                                >
-                                  {event.status ||
-                                    "—"}
-                                </span>
-                              </td>
-
-                              <td
-                                style={{
-                                  ...tableCellStyle,
-                                  textAlign:
-                                    "right",
-                                }}
-                              >
-                                {money(total)}
-                              </td>
-
-                              <td
-                                style={{
-                                  ...tableCellStyle,
-                                  textAlign:
-                                    "right",
-                                  color:
-                                    "#15803d",
-                                  fontWeight:
-                                    700,
-                                }}
-                              >
-                                {money(paid)}
-                              </td>
-
-                              <td
-                                style={{
-                                  ...tableCellStyle,
-                                  textAlign:
-                                    "right",
-                                  color:
-                                    "#dc2626",
-                                  fontWeight:
-                                    700,
-                                }}
-                              >
-                                {money(
-                                  pending
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              {/* RECENT EXPENSES */}
-
-              <section
-                className="print-card"
-                style={{
-                  background: "white",
-                  borderRadius: 16,
-                  padding: 22,
-                  boxShadow:
-                    "0 4px 18px rgba(0,0,0,0.06)",
-                  marginBottom: 24,
-                }}
-              >
-                <h2
-                  style={{
-                    marginTop: 0,
-                    marginBottom: 18,
-                    fontSize: 21,
-                  }}
-                >
-                  🧾 Recent Expenses
-                </h2>
-
-                <div
-                  style={{
-                    overflowX: "auto",
-                  }}
-                >
-                  <table
-                    style={{
-                      width: "100%",
-                      borderCollapse:
-                        "collapse",
-                      minWidth: 750,
-                    }}
-                  >
-                    <thead>
-                      <tr>
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Date
-                        </th>
-
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Title
-                        </th>
-
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Category
-                        </th>
-
-                        <th
-                          style={
-                            tableHeaderStyle
-                          }
-                        >
-                          Note
-                        </th>
-
-                        <th
-                          style={{
-                            ...tableHeaderStyle,
-                            textAlign:
-                              "right",
-                          }}
-                        >
-                          Amount
-                        </th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {recentExpenses.length ===
-                      0 ? (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            style={{
-                              padding: 30,
-                              textAlign:
-                                "center",
-                              color:
-                                "#6b7280",
-                            }}
-                          >
-                            No expenses found.
-                          </td>
-                        </tr>
-                      ) : (
-                        recentExpenses.map(
-                          (expense) => (
-                            <tr
-                              key={
-                                expense.id
-                              }
-                            >
-                              <td
-                                style={
-                                  tableCellStyle
-                                }
-                              >
-                                {formatDate(
-                                  expense.date
-                                )}
-                              </td>
-
-                              <td
-                                style={
-                                  tableCellStyle
-                                }
-                              >
-                                <strong>
-                                  {expense.title ||
-                                    "—"}
-                                </strong>
-                              </td>
-
-                              <td
-                                style={
-                                  tableCellStyle
-                                }
-                              >
-                                {expense.category ||
-                                  "Other"}
-                              </td>
-
-                              <td
-                                style={{
-                                  ...tableCellStyle,
-                                  color:
-                                    "#6b7280",
-                                }}
-                              >
-                                {expense.note ||
-                                  "—"}
-                              </td>
-
-                              <td
-                                style={{
-                                  ...tableCellStyle,
-                                  textAlign:
-                                    "right",
-                                  fontWeight:
-                                    700,
-                                  color:
-                                    "#dc2626",
-                                }}
-                              >
-                                {money(
-                                  Number(
-                                    expense.amount ||
-                                      0
-                                  )
-                                )}
-                              </td>
-                            </tr>
-                          )
-                        )
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              {/* FINAL SUMMARY */}
-
-              <section
-                className="print-card"
-                style={{
-                  background:
-                    "linear-gradient(135deg, #111827, #1f2937)",
-                  color: "white",
-                  borderRadius: 18,
-                  padding: 25,
-                  marginBottom: 25,
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent:
-                      "space-between",
+                    gridTemplateColumns: "85px 1fr 115px",
+                    gap: 10,
                     alignItems: "center",
-                    gap: 20,
-                    flexWrap: "wrap",
+                    marginTop: 10,
                   }}
                 >
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        opacity: 0.7,
-                        marginBottom: 7,
-                      }}
-                    >
-                      Overall Net Profit
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 34,
-                        fontWeight: 800,
-                      }}
-                    >
-                      {money(netProfit)}
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 13,
-                        opacity: 0.7,
-                        marginTop: 7,
-                      }}
-                    >
-                      Revenue minus total expenses
-                    </div>
-                  </div>
-
+                  <span style={{ color: String(color), fontSize: 13 }}>
+                    {label}
+                  </span>
                   <div
                     style={{
-                      display: "grid",
-                      gridTemplateColumns:
-                        "repeat(3, minmax(100px, 1fr))",
-                      gap: 20,
+                      height: 9,
+                      background: "#e5e7eb",
+                      borderRadius: 20,
+                      overflow: "hidden",
                     }}
                   >
-                    <div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          opacity: 0.65,
-                        }}
-                      >
-                        Revenue
-                      </div>
-
-                      <strong
-                        style={{
-                          fontSize: 17,
-                        }}
-                      >
-                        {money(
-                          totalRevenue
-                        )}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          opacity: 0.65,
-                        }}
-                      >
-                        Paid
-                      </div>
-
-                      <strong
-                        style={{
-                          fontSize: 17,
-                        }}
-                      >
-                        {money(totalPaid)}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          opacity: 0.65,
-                        }}
-                      >
-                        Expenses
-                      </div>
-
-                      <strong
-                        style={{
-                          fontSize: 17,
-                        }}
-                      >
-                        {money(
-                          totalExpenses
-                        )}
-                      </strong>
-                    </div>
+                                        <div
+                      style={{
+                        height: "100%",
+                        width: `${
+                          Math.min(
+                            100,
+                            (Math.abs(Number(value)) /
+                              Math.max(
+                                1,
+                                ...monthlyReport.flatMap((row) => [
+                                  row.income,
+                                  row.expense,
+                                  Math.abs(row.profit),
+                                ])
+                              )) *
+                              100
+                          )
+                        }%`,
+                        background: String(color),
+                      }}
+                    />
                   </div>
+                  <strong style={{ textAlign: "right", fontSize: 12 }}>
+                    {money(Number(value))}
+                  </strong>
                 </div>
-              </section>
+              ))}
+            </div>
+          ))
+        )}
+      </section>
 
-              <div
-                style={{
-                  textAlign: "center",
-                  color: "#9ca3af",
-                  fontSize: 12,
-                  paddingBottom: 20,
-                }}
-              >
-                WedFlow • Wedding Studio Management
-              </div>
-            </>
-          )}
+      <section style={{ ...cardStyle, marginBottom: 22 }}>
+        <h2>💸 Expense by Category</h2>
+
+        {categoryTotals.length === 0 ? (
+          <p>આ સ્ટુડિયોમાં કોઈ Expense મળ્યો નથી.</p>
+        ) : (
+          categoryTotals.map(([category, value]) => (
+            <div
+              key={category}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "12px 0",
+                borderBottom: "1px solid #e5e7eb",
+              }}
+            >
+              <span>{category}</span>
+              <strong>{money(value)}</strong>
+            </div>
+          ))
+        )}
+      </section>
+
+      <section style={{ ...cardStyle, marginBottom: 22 }}>
+        <h2>📋 Event Financial Report</h2>
+
+        <div style={{ overflowX: "auto" }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              minWidth: 700,
+            }}
+          >
+            <thead>
+              <tr>
+                {[
+                  "Event",
+                  "Client",
+                  "Date",
+                  "Status",
+                  "Total",
+                  "Advance",
+                  "Pending",
+                ].map((heading) => (
+                  <th key={heading} style={cellStyle}>
+                    {heading}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+
+            <tbody>
+              {events.length === 0 ? (
+                <tr>
+                  <td colSpan={7} style={cellStyle}>
+                    આ સ્ટુડિયોમાં કોઈ Event મળ્યો નથી.
+                  </td>
+                </tr>
+              ) : (
+                events.map((event) => {
+                  const total = toAmount(event.totalAmount);
+                  const paid = toAmount(event.advancePaid);
+                  const pending = Math.max(0, total - paid);
+
+                  return (
+                    <tr key={event.id}>
+                      <td style={cellStyle}>
+                        {event.eventName || event.weddingName || "—"}
+                      </td>
+                      <td style={cellStyle}>{event.clientName || "—"}</td>
+                      <td style={cellStyle}>{formatDate(event.weddingDate)}</td>
+                      <td style={cellStyle}>{event.status || "—"}</td>
+                      <td style={cellStyle}>{money(total)}</td>
+                      <td style={cellStyle}>{money(paid)}</td>
+                      <td style={cellStyle}>{money(pending)}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
-      </main>
-    </>
-  );
-}
+      </section>
 
-function ReportCard({
-  title,
-  value,
-  icon,
-  background,
-}: {
-  title: string;
-  value: string;
-  icon: string;
-  background: string;
-}) {
-  return (
-    <div
-      className="print-card"
-      style={{
-        background: "white",
-        borderRadius: 15,
-        padding: 20,
-        boxShadow:
-          "0 4px 18px rgba(0,0,0,0.06)",
-      }}
-    >
-      <div
+      <section style={{ ...cardStyle, marginBottom: 22 }}>
+        <h2>🧾 Recent Expenses</h2>
+
+        <div style={{ overflowX: "auto" }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              minWidth: 600,
+            }}
+          >
+            <thead>
+              <tr>
+                {["Date", "Title", "Category", "Note", "Amount"].map(
+                  (heading) => (
+                    <th key={heading} style={cellStyle}>
+                      {heading}
+                    </th>
+                  )
+                )}
+              </tr>
+            </thead>
+
+            <tbody>
+              {recentExpenses.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={cellStyle}>
+                    આ સ્ટુડિયોમાં કોઈ Expense મળ્યો નથી.
+                  </td>
+                </tr>
+              ) : (
+                recentExpenses.map((expense) => (
+                  <tr key={expense.id}>
+                    <td style={cellStyle}>{formatDate(expense.date)}</td>
+                    <td style={cellStyle}>{expense.title || "—"}</td>
+                    <td style={cellStyle}>{expense.category || "Other"}</td>
+                    <td style={cellStyle}>{expense.note || "—"}</td>
+                    <td style={cellStyle}>
+                      {money(toAmount(expense.amount))}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section
         style={{
-          width: 44,
-          height: 44,
-          borderRadius: 12,
-          background,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 22,
-          marginBottom: 13,
+          ...cardStyle,
+          background: "#111827",
+          color: "white",
         }}
       >
-        {icon}
-      </div>
+        <p style={{ opacity: 0.75 }}>Overall Net Profit</p>
+        <h1 style={{ fontSize: 34 }}>{money(netProfit)}</h1>
+        <p style={{ opacity: 0.8 }}>
+          Revenue minus total expenses
+        </p>
+        <p>Revenue: {money(totalRevenue)}</p>
+        <p>Paid: {money(totalPaid)}</p>
+        <p>Pending: {money(pendingAmount)}</p>
+        <p>Expenses: {money(totalExpenses)}</p>
+      </section>
 
-      <div
+      <footer
         style={{
-          fontSize: 13,
+          textAlign: "center",
           color: "#6b7280",
-          marginBottom: 6,
+          padding: 22,
+          fontSize: 12,
         }}
       >
-        {title}
-      </div>
-
-      <div
-        style={{
-          fontSize: 24,
-          fontWeight: 800,
-        }}
-      >
-        {value}
-      </div>
-    </div>
+        WedFlow • Wedding Studio Management
+      </footer>
+    </main>
   );
 }
-
-function SummaryBox({
-  title,
-  value,
-  icon,
-}: {
-  title: string;
-  value: number;
-  icon: string;
-}) {
-  return (
-    <div
-      className="print-card"
-      style={{
-        background: "#f9fafb",
-        border: "1px solid #e5e7eb",
-        borderRadius: 13,
-        padding: 18,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 22,
-          marginBottom: 8,
-        }}
-      >
-        {icon}
-      </div>
-
-      <div
-        style={{
-          fontSize: 12,
-          color: "#6b7280",
-          marginBottom: 4,
-        }}
-      >
-        {title}
-      </div>
-
-      <div
-        style={{
-          fontSize: 24,
-          fontWeight: 800,
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function MonthlyBar({
-  label,
-  value,
-  width,
-  color,
-}: {
-  label: string;
-  value: number;
-  width: number;
-  color: string;
-}) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns:
-          "90px 1fr 110px",
-        gap: 10,
-        alignItems: "center",
-        marginBottom: 7,
-      }}
-    >
-      <span
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color,
-        }}
-      >
-        {label}
-      </span>
-
-      <div
-        style={{
-          height: 10,
-          background: "#e5e7eb",
-          borderRadius: 99,
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            height: "100%",
-            width: `${width}%`,
-            background: color,
-            borderRadius: 99,
-          }}
-        />
-      </div>
-
-      <strong
-        style={{
-          fontSize: 12,
-          textAlign: "right",
-          color:
-            label === "Profit" && value < 0
-              ? "#dc2626"
-              : "#111827",
-        }}
-      >
-        {money(value)}
-      </strong>
-    </div>
-  );
-}
-
-const tableHeaderStyle: React.CSSProperties = {
-  textAlign: "left",
-  padding: "13px 12px",
-  background: "#f9fafb",
-  borderBottom: "1px solid #e5e7eb",
-  fontSize: 12,
-  color: "#6b7280",
-  textTransform: "uppercase",
-};
-
-const tableCellStyle: React.CSSProperties = {
-  padding: "14px 12px",
-  borderBottom: "1px solid #f1f5f9",
-  fontSize: 13,
-};
