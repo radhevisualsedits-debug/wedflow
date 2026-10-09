@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
@@ -9,6 +8,7 @@ import {
   doc,
   getDocs,
   query,
+  updateDoc,
   where,
 } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
@@ -36,17 +36,20 @@ const categories = [
   "Other",
 ];
 
+const today = () => new Date().toISOString().slice(0, 10);
+
 export default function ExpensesPage() {
   const [studioId, setStudioId] = useState("");
   const [authReady, setAuthReady] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("Other");
   const [amount, setAmount] = useState("");
-  const [date, setDate] = useState(
-    new Date().toISOString().slice(0, 10)
-  );
+  const [date, setDate] = useState(today());
   const [note, setNote] = useState("");
+
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingExpenses, setLoadingExpenses] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
@@ -56,6 +59,7 @@ export default function ExpensesPage() {
       setStudioId(user?.uid ?? "");
       setAuthReady(true);
     });
+
     return () => unsubscribe();
   }, []);
 
@@ -70,6 +74,7 @@ export default function ExpensesPage() {
       );
 
       const snapshot = await getDocs(q);
+
       const list = snapshot.docs.map((item) => ({
         id: item.id,
         ...item.data(),
@@ -78,6 +83,7 @@ export default function ExpensesPage() {
       list.sort((a, b) =>
         (b.date || "").localeCompare(a.date || "")
       );
+
       setExpenses(list);
     } catch (error) {
       console.error("Error loading expenses:", error);
@@ -101,6 +107,44 @@ export default function ExpensesPage() {
 
     void loadExpenses(studioId);
   }, [authReady, studioId]);
+
+  function resetForm() {
+    setTitle("");
+    setCategory("Other");
+    setAmount("");
+    setDate(today());
+    setNote("");
+    setEditingId(null);
+    setErrorMessage("");
+  }
+
+  function startEdit(expense: Expense) {
+    const user = auth.currentUser;
+
+    if (!user || user.uid !== studioId) {
+      alert("કૃપા કરીને ફરી Login કરો.");
+      return;
+    }
+
+    if (expense.studioId !== user.uid) {
+      alert("આ ખર્ચ તમારા સ્ટુડિયાનો નથી.");
+      return;
+    }
+
+    setEditingId(expense.id);
+    setTitle(expense.title || "");
+    setCategory(
+      categories.includes(expense.category)
+        ? expense.category
+        : "Other"
+    );
+    setAmount(String(expense.amount ?? ""));
+    setDate(expense.date || today());
+    setNote(expense.note || "");
+    setErrorMessage("");
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   async function saveExpense(
     e: React.FormEvent<HTMLFormElement>
@@ -126,32 +170,56 @@ export default function ExpensesPage() {
       return;
     }
 
+    if (!categories.includes(category)) {
+      alert("યોગ્ય કેટેગરી પસંદ કરો.");
+      return;
+    }
+
     setLoading(true);
     setErrorMessage("");
 
     try {
-      await addDoc(collection(db, "expenses"), {
-        studioId: user.uid,
+      const expenseData = {
         title: title.trim(),
         category,
         amount: numericAmount,
-        date: date || new Date().toISOString().slice(0, 10),
+        date: date || today(),
         note: note.trim(),
-        createdAt: new Date().toISOString(),
-      });
+      };
 
-      setTitle("");
-      setCategory("Other");
-      setAmount("");
-      setDate(new Date().toISOString().slice(0, 10));
-      setNote("");
+      if (editingId) {
+        const existingExpense = expenses.find(
+          (item) => item.id === editingId
+        );
 
+        if (!existingExpense || existingExpense.studioId !== user.uid) {
+          throw new Error("આ ખર્ચ તમારા સ્ટુડિયાનો નથી.");
+        }
+
+        await updateDoc(doc(db, "expenses", editingId), {
+          ...expenseData,
+          studioId: user.uid,
+        });
+
+        alert("ખર્ચ સફળતાપૂર્વક અપડેટ થયો.");
+      } else {
+        await addDoc(collection(db, "expenses"), {
+          ...expenseData,
+          studioId: user.uid,
+          createdAt: new Date().toISOString(),
+        });
+
+        alert("ખર્ચ સફળતાપૂર્વક સેવ થયો.");
+      }
+
+      resetForm();
       await loadExpenses(user.uid);
-      alert("ખર્ચ સફળતાપૂર્વક સેવ થયો.");
     } catch (error) {
       console.error("Error saving expense:", error);
       setErrorMessage(
-        "ખર્ચ સેવ થયો નથી. Firebase Rules અને Login તપાસો."
+        editingId
+          ? "ખર્ચ અપડેટ થયો નથી. Firebase Rules અને Login તપાસો."
+          : "ખર્ચ સેવ થયો નથી. Firebase Rules અને Login તપાસો."
       );
     } finally {
       setLoading(false);
@@ -171,15 +239,24 @@ export default function ExpensesPage() {
       return;
     }
 
-    if (!window.confirm(
-      `"${expense.title}" ખર્ચ Delete કરવો છે?`
-    )) return;
+    if (
+      !window.confirm(
+        `"${expense.title}" ખર્ચ Delete કરવો છે?`
+      )
+    ) {
+      return;
+    }
 
     try {
       await deleteDoc(doc(db, "expenses", expense.id));
+
       setExpenses((previous) =>
         previous.filter((item) => item.id !== expense.id)
       );
+
+      if (editingId === expense.id) {
+        resetForm();
+      }
     } catch (error) {
       console.error("Error deleting expense:", error);
       alert("ખર્ચ Delete થયો નથી. Firebase Rules તપાસો.");
@@ -195,7 +272,11 @@ export default function ExpensesPage() {
     `₹${value.toLocaleString("en-IN")}`;
 
   if (!authReady) {
-    return <main className="p-6 text-lg">Login તપાસી રહ્યા છીએ...</main>;
+    return (
+      <main className="p-6 text-lg">
+        Login તપાસી રહ્યા છીએ...
+      </main>
+    );
   }
 
   return (
@@ -215,12 +296,19 @@ export default function ExpensesPage() {
         </p>
       </section>
 
-      <section className="rounded-2xl border bg-white p-5 shadow-sm">
-        <h2 className="mb-5 text-2xl font-bold">નવો ખર્ચ ઉમેરો</h2>
+      <section
+        id="expense-form"
+        className="rounded-2xl border bg-white p-5 shadow-sm"
+      >
+        <h2 className="mb-5 text-2xl font-bold">
+          {editingId ? "ખર્ચમાં ફેરફાર કરો" : "નવો ખર્ચ ઉમેરો"}
+        </h2>
 
         <form onSubmit={saveExpense} className="space-y-4">
           <div>
-            <label className="mb-2 block font-semibold">ખર્ચનું નામ *</label>
+            <label className="mb-2 block font-semibold">
+              ખર્ચનું નામ *
+            </label>
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -231,20 +319,26 @@ export default function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-2 block font-semibold">કેટેગરી</label>
+            <label className="mb-2 block font-semibold">
+              કેટેગરી
+            </label>
             <select
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               className="w-full rounded-xl border bg-white px-4 py-3 text-lg"
             >
               {categories.map((item) => (
-                <option key={item} value={item}>{item}</option>
+                <option key={item} value={item}>
+                  {item}
+                </option>
               ))}
             </select>
           </div>
 
           <div>
-            <label className="mb-2 block font-semibold">રકમ (₹) *</label>
+            <label className="mb-2 block font-semibold">
+              રકમ (₹) *
+            </label>
             <input
               type="number"
               min="0.01"
@@ -258,7 +352,9 @@ export default function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-2 block font-semibold">તારીખ</label>
+            <label className="mb-2 block font-semibold">
+              તારીખ
+            </label>
             <input
               type="date"
               value={date}
@@ -268,7 +364,9 @@ export default function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-2 block font-semibold">નોંધ (વૈકલ્પિક)</label>
+            <label className="mb-2 block font-semibold">
+              નોંધ (વૈકલ્પિક)
+            </label>
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -283,13 +381,31 @@ export default function ExpensesPage() {
             disabled={loading || !studioId}
             className="w-full rounded-xl bg-blue-600 px-5 py-4 text-lg font-bold text-white disabled:opacity-60"
           >
-            {loading ? "સેવ થઈ રહ્યું છે..." : "ખર્ચ સેવ કરો"}
+            {loading
+              ? "સેવ થઈ રહ્યું છે..."
+              : editingId
+                ? "ફેરફાર સેવ કરો"
+                : "ખર્ચ સેવ કરો"}
           </button>
+
+          {editingId && (
+            <button
+              type="button"
+              onClick={resetForm}
+              disabled={loading}
+              className="w-full rounded-xl border px-5 py-3 font-semibold"
+            >
+              ફેરફાર રદ કરો
+            </button>
+          )}
         </form>
       </section>
 
       {errorMessage && (
-        <section role="alert" className="rounded-xl border border-red-300 bg-red-50 p-4 text-red-800">
+        <section
+          role="alert"
+          className="rounded-xl border border-red-300 bg-red-50 p-4 text-red-800"
+        >
           {errorMessage}
         </section>
       )}
@@ -306,33 +422,49 @@ export default function ExpensesPage() {
         ) : (
           <div className="space-y-3">
             {expenses.map((expense) => (
-              <article key={expense.id} className="rounded-xl border p-4">
+              <article
+                key={expense.id}
+                className="rounded-xl border p-4"
+              >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <h3 className="break-words text-xl font-bold">
                       {expense.title}
                     </h3>
+
                     <p className="mt-1 text-gray-600">
                       {expense.category} · {expense.date}
                     </p>
+
                     {expense.note && (
                       <p className="mt-2 break-words text-gray-700">
                         {expense.note}
                       </p>
                     )}
                   </div>
+
                   <p className="whitespace-nowrap text-xl font-bold">
                     {money(Number(expense.amount || 0))}
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => void deleteExpense(expense)}
-                  className="mt-4 rounded-lg border border-red-300 px-4 py-2 font-semibold text-red-700"
-                >
-                  Delete
-                </button>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => startEdit(expense)}
+                    className="rounded-lg border border-blue-300 px-4 py-2 font-semibold text-blue-700"
+                  >
+                    Edit
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void deleteExpense(expense)}
+                    className="rounded-lg border border-red-300 px-4 py-2 font-semibold text-red-700"
+                  >
+                    Delete
+                  </button>
+                </div>
               </article>
             ))}
           </div>
