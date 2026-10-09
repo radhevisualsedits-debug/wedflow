@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -7,16 +8,20 @@ import {
   deleteDoc,
   doc,
   getDocs,
+  query,
+  where,
 } from "firebase/firestore";
-import { db } from "../../lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth, db } from "../../lib/firebase";
 
 type Expense = {
   id: string;
-  title?: string;
-  category?: string;
-  amount?: number;
-  date?: string;
-  note?: string;
+  studioId: string;
+  title: string;
+  category: string;
+  amount: number;
+  date: string;
+  note: string;
   createdAt?: string;
 };
 
@@ -32,668 +37,307 @@ const categories = [
 ];
 
 export default function ExpensesPage() {
+  const [studioId, setStudioId] = useState("");
+  const [authReady, setAuthReady] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
-
   const [title, setTitle] = useState("");
-  const [category, setCategory] =
-    useState("Other");
+  const [category, setCategory] = useState("Other");
   const [amount, setAmount] = useState("");
-  const [date, setDate] = useState("");
+  const [date, setDate] = useState(
+    new Date().toISOString().slice(0, 10)
+  );
   const [note, setNote] = useState("");
-
   const [loading, setLoading] = useState(false);
+  const [loadingExpenses, setLoadingExpenses] = useState(true);
+  const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
-    loadExpenses();
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setStudioId(user?.uid ?? "");
+      setAuthReady(true);
+    });
+    return () => unsubscribe();
   }, []);
 
-  async function loadExpenses() {
+  async function loadExpenses(uid: string) {
+    setLoadingExpenses(true);
+    setErrorMessage("");
+
     try {
-      const snapshot = await getDocs(
-        collection(db, "expenses")
+      const q = query(
+        collection(db, "expenses"),
+        where("studioId", "==", uid)
       );
 
-      const list = snapshot.docs.map(
-        (item) => ({
-          id: item.id,
-          ...item.data(),
-        })
-      ) as Expense[];
+      const snapshot = await getDocs(q);
+      const list = snapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      })) as Expense[];
 
+      list.sort((a, b) =>
+        (b.date || "").localeCompare(a.date || "")
+      );
       setExpenses(list);
     } catch (error) {
-      console.error(
-        "Error loading expenses:",
-        error
+      console.error("Error loading expenses:", error);
+      setErrorMessage(
+        "ખર્ચ લોડ થયા નથી. Firebase Rules અને Login તપાસો."
       );
+    } finally {
+      setLoadingExpenses(false);
     }
   }
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    if (!studioId) {
+      setExpenses([]);
+      setLoadingExpenses(false);
+      setErrorMessage("ખર્ચ જોવા માટે પહેલાં Login કરો.");
+      return;
+    }
+
+    void loadExpenses(studioId);
+  }, [authReady, studioId]);
 
   async function saveExpense(
     e: React.FormEvent<HTMLFormElement>
   ) {
     e.preventDefault();
 
-    if (!title.trim()) {
-      alert("Please enter expense title.");
+    const user = auth.currentUser;
+
+    if (!user || user.uid !== studioId) {
+      alert("Login તપાસી શકાયું નથી. પેજ Refresh કરો.");
       return;
     }
 
-    if (
-      !amount ||
-      Number(amount) <= 0
-    ) {
-      alert("Please enter a valid amount.");
+    const numericAmount = Number(amount);
+
+    if (!title.trim()) {
+      alert("ખર્ચનું નામ લખો.");
       return;
     }
+
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      alert("યોગ્ય રકમ લખો.");
+      return;
+    }
+
+    setLoading(true);
+    setErrorMessage("");
 
     try {
-      setLoading(true);
-
-      await addDoc(
-        collection(db, "expenses"),
-        {
-          title: title.trim(),
-          category,
-          amount: Number(amount),
-          date:
-            date ||
-            new Date()
-              .toISOString()
-              .split("T")[0],
-          note: note.trim(),
-          createdAt:
-            new Date().toISOString(),
-        }
-      );
-
-      alert("Expense added successfully!");
+      await addDoc(collection(db, "expenses"), {
+        studioId: user.uid,
+        title: title.trim(),
+        category,
+        amount: numericAmount,
+        date: date || new Date().toISOString().slice(0, 10),
+        note: note.trim(),
+        createdAt: new Date().toISOString(),
+      });
 
       setTitle("");
       setCategory("Other");
       setAmount("");
-      setDate("");
+      setDate(new Date().toISOString().slice(0, 10));
       setNote("");
 
-      await loadExpenses();
+      await loadExpenses(user.uid);
+      alert("ખર્ચ સફળતાપૂર્વક સેવ થયો.");
     } catch (error) {
-      console.error(
-        "Error saving expense:",
-        error
-      );
-
-      alert(
-        "Expense could not be saved."
+      console.error("Error saving expense:", error);
+      setErrorMessage(
+        "ખર્ચ સેવ થયો નથી. Firebase Rules અને Login તપાસો."
       );
     } finally {
       setLoading(false);
     }
   }
 
-  async function deleteExpense(
-    expenseId: string
-  ) {
-    const confirmed =
-      window.confirm(
-        "Are you sure you want to delete this expense?"
-      );
+  async function deleteExpense(expense: Expense) {
+    const user = auth.currentUser;
 
-    if (!confirmed) {
+    if (!user || user.uid !== studioId) {
+      alert("કૃપા કરીને ફરી Login કરો.");
       return;
     }
 
+    if (expense.studioId !== user.uid) {
+      alert("આ ખર્ચ તમારા સ્ટુડિયાનો નથી.");
+      return;
+    }
+
+    if (!window.confirm(
+      `"${expense.title}" ખર્ચ Delete કરવો છે?`
+    )) return;
+
     try {
-      await deleteDoc(
-        doc(
-          db,
-          "expenses",
-          expenseId
-        )
+      await deleteDoc(doc(db, "expenses", expense.id));
+      setExpenses((previous) =>
+        previous.filter((item) => item.id !== expense.id)
       );
-
-      alert("Expense deleted.");
-
-      await loadExpenses();
     } catch (error) {
-      console.error(
-        "Error deleting expense:",
-        error
-      );
-
-      alert(
-        "Expense could not be deleted."
-      );
+      console.error("Error deleting expense:", error);
+      alert("ખર્ચ Delete થયો નથી. Firebase Rules તપાસો.");
     }
   }
 
-  const totalExpenses =
-    expenses.reduce(
-      (total, expense) =>
-        total +
-        Number(expense.amount || 0),
-      0
-    );
+  const total = expenses.reduce(
+    (sum, item) => sum + Number(item.amount || 0),
+    0
+  );
 
-  function money(amount: number) {
-    return `₹${Number(
-      amount || 0
-    ).toLocaleString("en-IN")}`;
+  const money = (value: number) =>
+    `₹${value.toLocaleString("en-IN")}`;
+
+  if (!authReady) {
+    return <main className="p-6 text-lg">Login તપાસી રહ્યા છીએ...</main>;
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "#f5f6fa",
-        fontFamily:
-          "Arial, Helvetica, sans-serif",
-        padding: "30px",
-        boxSizing: "border-box",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: "1100px",
-          margin: "0 auto",
-        }}
-      >
-        {/* HEADER */}
+    <main className="mx-auto w-full max-w-5xl space-y-6 p-4 text-base sm:p-6">
+      <header>
+        <h1 className="text-3xl font-bold">Expenses</h1>
+        <p className="mt-2 text-gray-600">
+          તમારા સ્ટુડિયાના ખર્ચની નોંધ રાખો.
+        </p>
+      </header>
 
-        <div
-          style={{
-            marginBottom: "25px",
-          }}
-        >
-          <h1
-            style={{
-              margin: 0,
-              fontSize: "32px",
-              color: "#111827",
-            }}
-          >
-            Expenses
-          </h1>
+      <section className="rounded-2xl border bg-white p-5 shadow-sm">
+        <p className="text-lg text-gray-600">કુલ ખર્ચ</p>
+        <p className="mt-2 text-3xl font-bold">{money(total)}</p>
+        <p className="mt-1 text-sm text-gray-500">
+          કુલ {expenses.length} ખર્ચની નોંધ
+        </p>
+      </section>
 
-          <p
-            style={{
-              marginTop: "8px",
-              color: "#6b7280",
-            }}
+      <section className="rounded-2xl border bg-white p-5 shadow-sm">
+        <h2 className="mb-5 text-2xl font-bold">નવો ખર્ચ ઉમેરો</h2>
+
+        <form onSubmit={saveExpense} className="space-y-4">
+          <div>
+            <label className="mb-2 block font-semibold">ખર્ચનું નામ *</label>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              required
+              className="w-full rounded-xl border px-4 py-3 text-lg"
+              placeholder="દા.ત. પેટ્રોલ"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block font-semibold">કેટેગરી</label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full rounded-xl border bg-white px-4 py-3 text-lg"
+            >
+              {categories.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-2 block font-semibold">રકમ (₹) *</label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              required
+              className="w-full rounded-xl border px-4 py-3 text-lg"
+              placeholder="1500"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block font-semibold">તારીખ</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full rounded-xl border px-4 py-3 text-lg"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block font-semibold">નોંધ (વૈકલ્પિક)</label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={3}
+              className="w-full rounded-xl border px-4 py-3 text-lg"
+              placeholder="વધારાની માહિતી"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading || !studioId}
+            className="w-full rounded-xl bg-blue-600 px-5 py-4 text-lg font-bold text-white disabled:opacity-60"
           >
-            Track your studio expenses
+            {loading ? "સેવ થઈ રહ્યું છે..." : "ખર્ચ સેવ કરો"}
+          </button>
+        </form>
+      </section>
+
+      {errorMessage && (
+        <section role="alert" className="rounded-xl border border-red-300 bg-red-50 p-4 text-red-800">
+          {errorMessage}
+        </section>
+      )}
+
+      <section className="rounded-2xl border bg-white p-5 shadow-sm">
+        <h2 className="mb-4 text-2xl font-bold">ખર્ચની યાદી</h2>
+
+        {loadingExpenses ? (
+          <p className="py-5 text-lg">ખર્ચ લોડ થઈ રહ્યા છે...</p>
+        ) : expenses.length === 0 ? (
+          <p className="py-5 text-lg text-gray-600">
+            હજી કોઈ ખર્ચની નોંધ નથી.
           </p>
-        </div>
-
-        {/* SUMMARY */}
-
-        <div
-          style={{
-            background: "#ffffff",
-            borderRadius: "16px",
-            padding: "22px",
-            boxShadow:
-              "0 4px 15px rgba(0,0,0,0.05)",
-            marginBottom: "25px",
-          }}
-        >
-          <div
-            style={{
-              color: "#6b7280",
-              fontSize: "14px",
-            }}
-          >
-            Total Expenses
-          </div>
-
-          <div
-            style={{
-              marginTop: "8px",
-              fontSize: "30px",
-              fontWeight: 700,
-              color: "#dc2626",
-            }}
-          >
-            {money(totalExpenses)}
-          </div>
-        </div>
-
-        {/* ADD EXPENSE */}
-
-        <div
-          style={{
-            background: "#ffffff",
-            padding: "25px",
-            borderRadius: "16px",
-            boxShadow:
-              "0 4px 15px rgba(0,0,0,0.05)",
-            marginBottom: "25px",
-          }}
-        >
-          <h2
-            style={{
-              marginTop: 0,
-              color: "#111827",
-            }}
-          >
-            Add Expense
-          </h2>
-
-          <form
-            onSubmit={saveExpense}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns:
-                  "repeat(auto-fit, minmax(220px, 1fr))",
-                gap: "16px",
-              }}
-            >
-              {/* TITLE */}
-
-              <div>
-                <label
-                  style={labelStyle}
-                >
-                  Expense Title *
-                </label>
-
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(e) =>
-                    setTitle(
-                      e.target.value
-                    )
-                  }
-                  placeholder="Example: Camera Repair"
-                  style={inputStyle}
-                />
-              </div>
-
-              {/* CATEGORY */}
-
-              <div>
-                <label
-                  style={labelStyle}
-                >
-                  Category
-                </label>
-
-                <select
-                  value={category}
-                  onChange={(e) =>
-                    setCategory(
-                      e.target.value
-                    )
-                  }
-                  style={inputStyle}
-                >
-                  {categories.map(
-                    (item) => (
-                      <option
-                        key={item}
-                        value={item}
-                      >
-                        {item}
-                      </option>
-                    )
-                  )}
-                </select>
-              </div>
-
-              {/* AMOUNT */}
-
-              <div>
-                <label
-                  style={labelStyle}
-                >
-                  Amount *
-                </label>
-
-                <input
-                  type="number"
-                  min="0"
-                  value={amount}
-                  onChange={(e) =>
-                    setAmount(
-                      e.target.value
-                    )
-                  }
-                  placeholder="Enter amount"
-                  style={inputStyle}
-                />
-              </div>
-
-              {/* DATE */}
-
-              <div>
-                <label
-                  style={labelStyle}
-                >
-                  Date
-                </label>
-
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(e) =>
-                    setDate(
-                      e.target.value
-                    )
-                  }
-                  style={inputStyle}
-                />
-              </div>
-
-              {/* NOTE */}
-
-              <div
-                style={{
-                  gridColumn:
-                    "1 / -1",
-                }}
-              >
-                <label
-                  style={labelStyle}
-                >
-                  Note
-                </label>
-
-                <textarea
-                  value={note}
-                  onChange={(e) =>
-                    setNote(
-                      e.target.value
-                    )
-                  }
-                  placeholder="Optional note"
-                  rows={3}
-                  style={{
-                    ...inputStyle,
-                    resize: "vertical",
-                  }}
-                />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                marginTop: "20px",
-                padding:
-                  "13px 22px",
-                border: "none",
-                borderRadius: "10px",
-                background: "#111827",
-                color: "#ffffff",
-                fontSize: "15px",
-                fontWeight: 600,
-                cursor: loading
-                  ? "not-allowed"
-                  : "pointer",
-                opacity: loading
-                  ? 0.7
-                  : 1,
-              }}
-            >
-              {loading
-                ? "Saving..."
-                : "+ Add Expense"}
-            </button>
-          </form>
-        </div>
-
-        {/* EXPENSE LIST */}
-
-        <div
-          style={{
-            background: "#ffffff",
-            padding: "25px",
-            borderRadius: "16px",
-            boxShadow:
-              "0 4px 15px rgba(0,0,0,0.05)",
-          }}
-        >
-          <h2
-            style={{
-              marginTop: 0,
-              color: "#111827",
-            }}
-          >
-            Expense History
-          </h2>
-
-          {expenses.length === 0 ? (
-            <div
-              style={{
-                padding: "30px 10px",
-                textAlign: "center",
-                color: "#9ca3af",
-              }}
-            >
-              No expenses found.
-            </div>
-          ) : (
-            <div
-              style={{
-                overflowX: "auto",
-              }}
-            >
-              <table
-                style={{
-                  width: "100%",
-                  minWidth: "700px",
-                  borderCollapse:
-                    "collapse",
-                }}
-              >
-                <thead>
-                  <tr>
-                    <th
-                      style={
-                        tableHeaderStyle
-                      }
-                    >
-                      Date
-                    </th>
-
-                    <th
-                      style={
-                        tableHeaderStyle
-                      }
-                    >
-                      Title
-                    </th>
-
-                    <th
-                      style={
-                        tableHeaderStyle
-                      }
-                    >
-                      Category
-                    </th>
-
-                    <th
-                      style={
-                        tableHeaderStyle
-                      }
-                    >
-                      Amount
-                    </th>
-
-                    <th
-                      style={
-                        tableHeaderStyle
-                      }
-                    >
-                      Note
-                    </th>
-
-                    <th
-                      style={
-                        tableHeaderStyle
-                      }
-                    >
-                      Action
-                    </th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {expenses
-                    .slice()
-                    .sort(
-                      (a, b) =>
-                        new Date(
-                          b.date ||
-                            "1900-01-01"
-                        ).getTime() -
-                        new Date(
-                          a.date ||
-                            "1900-01-01"
-                        ).getTime()
-                    )
-                    .map(
-                      (expense) => (
-                        <tr
-                          key={
-                            expense.id
-                          }
-                        >
-                          <td
-                            style={
-                              tableCellStyle
-                            }
-                          >
-                            {expense.date ||
-                              "-"}
-                          </td>
-
-                          <td
-                            style={{
-                              ...tableCellStyle,
-                              fontWeight: 600,
-                              color:
-                                "#111827",
-                            }}
-                          >
-                            {expense.title ||
-                              "-"}
-                          </td>
-
-                          <td
-                            style={
-                              tableCellStyle
-                            }
-                          >
-                            {expense.category ||
-                              "-"}
-                          </td>
-
-                          <td
-                            style={{
-                              ...tableCellStyle,
-                              fontWeight: 700,
-                              color:
-                                "#dc2626",
-                            }}
-                          >
-                            {money(
-                              Number(
-                                expense.amount ||
-                                  0
-                              )
-                            )}
-                          </td>
-
-                          <td
-                            style={
-                              tableCellStyle
-                            }
-                          >
-                            {expense.note ||
-                              "-"}
-                          </td>
-
-                          <td
-                            style={
-                              tableCellStyle
-                            }
-                          >
-                            <button
-                              onClick={() =>
-                                deleteExpense(
-                                  expense.id
-                                )
-                              }
-                              style={{
-                                padding:
-                                  "8px 12px",
-                                border:
-                                  "none",
-                                borderRadius:
-                                  "8px",
-                                background:
-                                  "#fee2e2",
-                                color:
-                                  "#b91c1c",
-                                cursor:
-                                  "pointer",
-                                fontWeight:
-                                  600,
-                              }}
-                            >
-                              🗑️ Delete
-                            </button>
-                          </td>
-                        </tr>
-                      )
+        ) : (
+          <div className="space-y-3">
+            {expenses.map((expense) => (
+              <article key={expense.id} className="rounded-xl border p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="break-words text-xl font-bold">
+                      {expense.title}
+                    </h3>
+                    <p className="mt-1 text-gray-600">
+                      {expense.category} · {expense.date}
+                    </p>
+                    {expense.note && (
+                      <p className="mt-2 break-words text-gray-700">
+                        {expense.note}
+                      </p>
                     )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
+                  </div>
+                  <p className="whitespace-nowrap text-xl font-bold">
+                    {money(Number(expense.amount || 0))}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void deleteExpense(expense)}
+                  className="mt-4 rounded-lg border border-red-300 px-4 py-2 font-semibold text-red-700"
+                >
+                  Delete
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
     </main>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "12px",
-  border: "1px solid #d1d5db",
-  borderRadius: "9px",
-  fontSize: "14px",
-  boxSizing: "border-box",
-  outline: "none",
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  marginBottom: "6px",
-  fontSize: "13px",
-  fontWeight: 600,
-  color: "#374151",
-};
-
-const tableHeaderStyle: React.CSSProperties = {
-  textAlign: "left",
-  padding: "12px",
-  background: "#f3f4f6",
-  color: "#374151",
-  fontSize: "13px",
-  fontWeight: 700,
-  borderBottom:
-    "1px solid #e5e7eb",
-};
-
-const tableCellStyle: React.CSSProperties = {
-  padding: "13px 12px",
-  color: "#4b5563",
-  fontSize: "13px",
-  borderBottom:
-    "1px solid #e5e7eb",
-};
